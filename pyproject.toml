@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cell-tracking"
+version = "0.1.0"
+description = "Biohub cell tracking -- simplest baseline: single-frame 3D U-Net detector + distance-gated linking"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "blosc2",
+    "torch",
+    "geff",
+    "zarr",
+    "zstandard",
+]
+
+[project.optional-dependencies]
+dev = [
+    "kaggle",
+    "jupyter",
+    "ipykernel",
+    "matplotlib",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

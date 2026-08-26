@@ -1,0 +1,38 @@
+# Virtual environments
+cell-tracking-env/
+.venv/
+venv/
+env/
+
+# Competition data (do not commit -- full set is ~90GB) and private notes.
+# No trailing slash: `data` here is a symlink to the sibling repo's data/,
+# and a trailing-slash pattern only matches real directories, not symlinks.
+data
+biohub-cell-tracking-during-development
+CLAUDE.md
+metrics.md
+
+# Outputs
+submission.csv
+dist/
+reports/
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
