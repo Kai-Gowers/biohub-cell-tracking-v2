@@ -35,6 +35,10 @@ def main() -> int:
     parser.add_argument("--volume", action="append", dest="volumes", default=None)
     parser.add_argument("--t-max", type=int, default=None, help="Debug: only the first N frames.")
     parser.add_argument("--no-subvoxel", action="store_true", help="Emit integer-grid detection coordinates.")
+    parser.add_argument("--no-tta", action="store_true", help="Skip flip test-time augmentation.")
+    parser.add_argument(
+        "--no-edge-model", action="store_true", help="Ignore a checkpoint's edge scorer; link by distance."
+    )
     args = parser.parse_args()
 
     test_dir = args.test_dir or get_test_dir()
@@ -49,7 +53,9 @@ def main() -> int:
         names = build_split(test_dir, split_path)
         print(f"wrote split: {split_path}")
 
-    model, device = load_model(args.checkpoint)
+    model, edge_scorer, device = load_model(args.checkpoint)
+    if args.no_edge_model:
+        edge_scorer = None
     print(f"model on {device}; {len(names)} volume(s) from {test_dir}")
 
     started = time.time()
@@ -61,6 +67,8 @@ def main() -> int:
             cache_dir=args.cache_dir or get_cache_dir(),
             t_max=args.t_max,
             subvoxel=not args.no_subvoxel,
+            edge_scorer=edge_scorer,
+            tta=not args.no_tta,
         )
         write_prediction(graph, args.out_dir, name)
         print(

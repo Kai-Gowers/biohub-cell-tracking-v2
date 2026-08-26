@@ -1,10 +1,12 @@
 """Paths and every algorithm hyperparameter.
 
-This is the v2 baseline: a single-frame 3D U-Net detector followed by
-distance-gated bipartite linking (scipy `linear_sum_assignment`, no learned
-edge model, no repair passes). Deliberately narrow -- see README.md for the
-philosophy. Add a constant here, with a comment explaining why, only once
-`reports/` has evidence that it helps.
+v2 has grown past its original single-frame/no-edge-model baseline: a
+2-frame windowed 3D U-Net with cross-frame attention, a learned edge scorer
+trained via detect-and-match, augmentation + TTA, and greedy (not exact)
+linking -- see reports/2026-08-25-sample-solution-0.90-comparison.md and
+reports/2026-08-25-four-sample-solution-features.md for why. There is still
+no repair pass and no divisions. Add a constant here, with a comment
+explaining why, only once `reports/` has evidence that it helps.
 """
 
 from __future__ import annotations
@@ -47,10 +49,44 @@ PEAK_NMS_RADIUS_VX = 2
 MAX_DETECTIONS_PER_FRAME = 1500
 
 # --- Model ----------------------------------------------------------------
-# Single frame in, single frame out -- no temporal window. Add one back only
-# if a held-out score shows single-frame detection is the bottleneck.
+# 2-frame temporal window with multi-head self-attention across the window at
+# every encoder stage except full-res, reintroduced from the v2 baseline's
+# single-frame default per reports/2026-08-25-sample-solution-0.90-comparison.md
+# item 4 (the 0.90 sample solution attends at every encoder stage; the v1
+# sibling repo only mixed frames at the bottleneck).
 UNET_BASE_CHANNELS = 16
 UNET_DEPTH = 3
+WINDOW_SIZE = 2       # frames per model input; the LAST frame is the prediction target
+ATTN_HEADS = 4        # must evenly divide every encoder stage's channel count
+
+# --- Edge model -------------------------------------------------------------
+# A learned edge scorer (report item 1/2), trained via detect-and-match in
+# train.py/edge_train.py: candidate pairs and their positive/negative labels
+# come from the detector's OWN live peaks matched to ground truth, never a
+# synthetic GT-node + nearest-peak-decoy set. Node features are sampled
+# (trilinear) from the decoder's finest feature map, which has
+# UNET_BASE_CHANNELS channels at full grid resolution.
+EDGE_FEATURE_DIM = UNET_BASE_CHANNELS
+EDGE_HIDDEN_DIM = 64
+EDGE_MATCH_RADIUS_UM = 5.0   # GT-match radius for building detect-and-match labels
+EDGE_LOSS_WEIGHT = 1.0
+EDGE_NEG_ALPHA = 0.05        # candidate pairs are mostly non-edges; mirrors CENTER_NEG_ALPHA
+
+# --- Augmentation -----------------------------------------------------------
+# y/x flip + brightness jitter, shared across every frame in a training
+# window (and the target's GT grid) so the sample stays geometrically and
+# photometrically consistent. z is excluded from flipping for the same
+# anisotropy reason TTA excludes it below.
+AUGMENT_FLIP_PROB = 0.5
+AUGMENT_BRIGHTNESS_GAIN = (0.85, 1.15)
+AUGMENT_BRIGHTNESS_BIAS = (-0.05, 0.05)
+
+# --- Test-time augmentation --------------------------------------------------
+# Average detection LOGITS over identity + 3 flips. z is excluded: DOWNSAMPLE
+# already makes z ~4x coarser than y/x, so a z-flip is not the same kind of
+# invariance a y/x flip tests. Each tuple is the `dims` argument to
+# `torch.flip` on a (..., Z, Y, X) tensor.
+TTA_FLIPS: tuple[tuple[int, ...], ...] = ((), (-1,), (-2,), (-2, -1))
 
 # --- Detection loss ---------------------------------------------------------
 # w+(b) = 1/N+(b), w-(b) = alpha/N-(b), alpha = 0.01.
@@ -62,12 +98,16 @@ UNET_DEPTH = 3
 CENTER_NEG_ALPHA = 0.01
 
 # --- Linking ---------------------------------------------------------------
-# The entire "edge model" in this baseline: gate candidate links to this
-# radius, then solve an exact minimum-distance bipartite assignment (scipy) with
-# in/out-degree <= 1 -- no division support, no learned score, no repair pass.
-# A link is preferred over leaving both nodes unmatched only if it is closer
-# than this radius, which doubles as the birth/death cost.
+# Candidates are still gated to this radius, but selection is now plain
+# greedy score-sorted thresholding, not an exact bipartite assignment --
+# report item 5: even the 0.90 sample solution uses greedy-by-default (its
+# ILP solver ships but is OFF), so this is not where points are being left on
+# the table. In/out-degree is still <= 1 by construction (no divisions).
 LINK_RADIUS_UM = 15.0
+# Score threshold when a learned edge model is available (its sigmoid output
+# is a probability); with no edge model, link.py falls back to negative
+# distance and this threshold is unused.
+LINK_SCORE_THRESHOLD = 0.5
 
 # --- Training -------------------------------------------------------------
 VAL_FRAC = 0.1

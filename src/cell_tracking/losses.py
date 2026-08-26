@@ -1,11 +1,11 @@
-"""Detection loss. There is no edge loss: linking is unlearned (see link.py)."""
+"""Detection loss, plus the edge-scorer loss for the learned linking stage."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
 
-from cell_tracking.config import CENTER_NEG_ALPHA
+from cell_tracking.config import CENTER_NEG_ALPHA, EDGE_NEG_ALPHA
 
 
 def detection_loss(
@@ -47,3 +47,23 @@ def detection_loss(
     )
     neg_term = alpha * (flat_neg * flat_bce).sum(dim=1) / n_neg
     return (pos_term + neg_term).mean()
+
+
+def edge_loss(logits: torch.Tensor, labels: torch.Tensor, *, alpha: float = EDGE_NEG_ALPHA) -> torch.Tensor:
+    """Weighted BCE over candidate edges, same shape of reasoning as `detection_loss`.
+
+    Candidates are gated to `LINK_RADIUS_UM` and labeled via detect-and-match
+    (`edge_train.py`), so the overwhelming majority are non-edges -- either a
+    genuine distractor or one/both endpoints unmatched to any annotated GT
+    node. `alpha` down-weights that negative pool the same way
+    `CENTER_NEG_ALPHA` does for background voxels.
+    """
+    if logits.numel() == 0:
+        return logits.new_zeros(())
+    bce = F.binary_cross_entropy_with_logits(logits, labels, reduction="none")
+    pos = (labels > 0.5).to(logits.dtype)
+    neg = 1.0 - pos
+    n_pos, n_neg = pos.sum(), neg.sum().clamp_min(1.0)
+    pos_term = (pos * bce).sum() / n_pos.clamp_min(1.0) if n_pos > 0 else logits.new_zeros(())
+    neg_term = alpha * (neg * bce).sum() / n_neg
+    return pos_term + neg_term

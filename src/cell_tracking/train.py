@@ -1,7 +1,10 @@
-"""Train the detector: one head, one loss, one checkpoint.
+"""Train the detector and the edge scorer together, one checkpoint.
 
-Samples are single frames, not temporal windows -- there is no edge head to
-feed, so nothing needs two frames from the same forward pass.
+Detection samples are `WINDOW_SIZE`-frame windows (the temporal U-Net's
+input), not single frames -- see `models/detector.py`. Edge-scorer samples
+are detect-and-match frame pairs (`edge_train.py`): every `edge_every`-th
+step, in the SAME backward pass as the detection loss, so the two heads train
+jointly rather than the edge scorer bolting onto a frozen detector.
 """
 
 from __future__ import annotations
@@ -15,17 +18,29 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from cell_tracking.augment import augment_window
 from cell_tracking.cache import VolumeFrames, cache_path
-from cell_tracking.config import CHECKPOINT_NAME, VAL_FRAC, VAL_SEED, get_cache_dir, get_train_dir
+from cell_tracking.config import (
+    CHECKPOINT_NAME,
+    EDGE_LOSS_WEIGHT,
+    VAL_FRAC,
+    VAL_SEED,
+    WINDOW_SIZE,
+    get_cache_dir,
+    get_train_dir,
+    voxels_to_um,
+)
+from cell_tracking.edge_train import sample_edge_pair
 from cell_tracking.io_geff import list_geff_datasets, read_geff, split_dataset_names
-from cell_tracking.losses import detection_loss
+from cell_tracking.losses import detection_loss, edge_loss
 from cell_tracking.models.detector import UNet3D
+from cell_tracking.models.edge_model import EdgeScorer
 
 
 @dataclass
 class Sample:
-    frame: np.ndarray  # (Z, Y, X) float32
-    node_grid: np.ndarray  # (n, 3) int grid coords of GT nodes in this frame
+    window: np.ndarray  # (T, Z, Y, X) float32, target frame is the LAST one
+    node_grid: np.ndarray  # (n, 3) int grid coords of GT nodes in the target frame
 
 
 class VolumeSampler:
@@ -49,13 +64,34 @@ class VolumeSampler:
             t: np.rint(voxels_to_grid(np.asarray(v, dtype=np.float64))).astype(np.int64)
             for t, v in coords.items()
         }
+
+        # For edge-model detect-and-match: GT positions in µm (continuous,
+        # not rounded to the model grid) plus their original node ids, and
+        # the volume's real GT edge set (by node id).
+        self.gt_um: dict[int, np.ndarray] = {}
+        self.gt_ids: dict[int, np.ndarray] = {}
+        for t, nodes in graph.nodes_by_t().items():
+            if not (0 <= t < self.frames.n_t):
+                continue
+            ids = np.array([nid for nid, _ in nodes], dtype=np.int64)
+            vox = np.array([c for _, c in nodes], dtype=np.float64)
+            self.gt_ids[t] = ids
+            self.gt_um[t] = voxels_to_um(vox)
+        self.gt_edges = {(int(u), int(v)) for u, v in graph.edges}
+
         self.starts = list(range(self.frames.n_t))
 
     def __len__(self) -> int:
         return len(self.starts)
 
-    def sample(self, t: int) -> Sample:
-        return Sample(self.frames.frame(t), self.grid.get(t, np.zeros((0, 3), dtype=np.int64)))
+    def sample(
+        self, t: int, *, augment: bool = False, rng: random.Random | None = None
+    ) -> Sample:
+        window = self.frames.window(t - (WINDOW_SIZE - 1), WINDOW_SIZE)
+        grid = self.grid.get(t, np.zeros((0, 3), dtype=np.int64))
+        if augment:
+            window, grid = augment_window(window, grid, rng or random.Random())
+        return Sample(window=window, node_grid=grid)
 
 
 def detection_target(shape_zyx: tuple[int, int, int], node_grid: np.ndarray) -> np.ndarray:
@@ -71,13 +107,44 @@ def detection_target(shape_zyx: tuple[int, int, int], node_grid: np.ndarray) -> 
 
 
 def compute_loss(model: UNet3D, samples: list[Sample], device: torch.device) -> tuple[torch.Tensor, dict]:
-    x = torch.from_numpy(np.stack([s.frame for s in samples])).unsqueeze(1).to(device)
+    x = torch.from_numpy(np.stack([s.window for s in samples])).to(device)  # (B, T, Z, Y, X)
     logits = model(x)[:, 0]
-    targets = np.stack([detection_target(s.frame.shape, s.node_grid) for s in samples])
+    targets = np.stack([detection_target(s.window.shape[-3:], s.node_grid) for s in samples])
     y = torch.from_numpy(targets).to(device)
     loss = detection_loss(logits, y)
     n_gt = sum(len(s.node_grid) for s in samples) / len(samples)
     return loss, {"loss": float(loss.detach()), "n_gt": n_gt}
+
+
+def compute_edge_loss(
+    model: UNet3D,
+    edge_scorer: EdgeScorer,
+    samplers: dict[str, VolumeSampler],
+    names: list[str],
+    rng: random.Random,
+    device: torch.device,
+) -> tuple[torch.Tensor, dict] | None:
+    candidates = [n for n in names if len(samplers[n]) >= 2]
+    if not candidates:
+        return None
+    name = rng.choice(candidates)
+    s = samplers[name]
+    t = rng.randrange(0, s.frames.n_t - 1)
+    out = sample_edge_pair(model, s, t, device)
+    if out is None:
+        return None
+    feat_src, feat_dst, rel_um, y = out
+    logits = edge_scorer(feat_src, feat_dst, rel_um)
+    loss = edge_loss(logits, y)
+    with torch.no_grad():
+        pred = (torch.sigmoid(logits) >= 0.5).float()
+        acc = float((pred == y).float().mean()) if len(y) else float("nan")
+    return loss, {
+        "edge_loss": float(loss.detach()),
+        "edge_pairs": len(y),
+        "edge_pos": float(y.sum()),
+        "edge_acc": acc,
+    }
 
 
 @dataclass
@@ -124,6 +191,10 @@ def train(
     started_at: float | None = None,
     select_by: str = "val_loss",
     patience: int | None = None,
+    use_augment: bool = True,
+    train_edge_model: bool = True,
+    edge_loss_weight: float = EDGE_LOSS_WEIGHT,
+    edge_every: int = 1,
 ) -> Path:
     """Train to `out_path`, checkpointing every epoch.
 
@@ -136,6 +207,11 @@ def train(
     `max_hours` + `started_at` (a `time.time()` from the *start of the
     session*, before any cache build) stop cleanly after the last epoch that
     fits a Kaggle session, rather than losing a killed epoch's work.
+
+    `train_edge_model` trains an `EdgeScorer` alongside the detector, one
+    joint backward pass every `edge_every`-th step, via detect-and-match
+    (`edge_train.py`) -- see that module's docstring for why its loss starts
+    near zero and ramps up as detection quality improves.
     """
     train_dir = Path(train_dir or get_train_dir())
     cache_dir = Path(cache_dir or get_cache_dir())
@@ -151,7 +227,9 @@ def train(
     print(f"device={device}  volumes: {len(train_names)} train / {len(val_names)} val")
 
     model = UNet3D().to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    edge_scorer = EdgeScorer().to(device) if train_edge_model else None
+    params = list(model.parameters()) + (list(edge_scorer.parameters()) if edge_scorer else [])
+    opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
     start_epoch = 0
     best_path = out_path.with_name(f"{out_path.stem}_best{out_path.suffix}")
@@ -161,6 +239,8 @@ def train(
     if resume and out_path.exists():
         ckpt = torch.load(out_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["state_dict"])
+        if edge_scorer is not None and ckpt.get("edge_state_dict") is not None:
+            edge_scorer.load_state_dict(ckpt["edge_state_dict"])
         if "optimizer" in ckpt:
             opt.load_state_dict(ckpt["optimizer"])
         if "scheduler" in ckpt:
@@ -188,6 +268,8 @@ def train(
 
     def run_epoch(epoch: int, split: list[str], per_volume: int, training: bool) -> dict:
         model.train(training)
+        if edge_scorer is not None:
+            edge_scorer.train(training)
         rng = random.Random(seed * 1000 + epoch if training else 12345)
         work: list[tuple[str, int]] = []
         for n in split:
@@ -212,20 +294,35 @@ def train(
             opt.zero_grad(set_to_none=True)
         for k in range(n_batches):
             chunk = work[k * batch_size : (k + 1) * batch_size]
-            batch = [samplers[name].sample(t) for name, t in chunk]
+            batch = [
+                samplers[name].sample(t, augment=(training and use_augment), rng=rng)
+                for name, t in chunk
+            ]
+            do_edge = edge_scorer is not None and edge_every > 0 and (n_steps % edge_every == 0)
             if training:
                 with torch.autocast("cuda", enabled=amp):
                     loss, stats = compute_loss(model, batch, device)
+                    if do_edge:
+                        edge_out = compute_edge_loss(model, edge_scorer, samplers, split, rng, device)
+                        if edge_out is not None:
+                            edge_l, edge_stats = edge_out
+                            loss = loss + edge_loss_weight * edge_l
+                            stats.update(edge_stats)
                 scaler.scale(loss / grad_accum).backward()
                 if (k + 1) % grad_accum == 0 or k == n_batches - 1:
                     scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(params, 1.0)
                     scaler.step(opt)
                     scaler.update()
                     opt.zero_grad(set_to_none=True)
             else:
                 with torch.no_grad(), torch.autocast("cuda", enabled=amp):
                     _, stats = compute_loss(model, batch, device)
+                    if do_edge:
+                        edge_out = compute_edge_loss(model, edge_scorer, samplers, split, rng, device)
+                        if edge_out is not None:
+                            _, edge_stats = edge_out
+                            stats.update(edge_stats)
             for key, v in stats.items():
                 totals[key] = totals.get(key, 0.0) + v
             n_steps += 1
@@ -253,9 +350,12 @@ def train(
         va = run_epoch(epoch, val_names, val_frames_per_volume, False)
         sched.step()
         elapsed = time.time() - t0
+        edge_msg = ""
+        if "edge_loss" in tr:
+            edge_msg = f"  edge_loss={tr['edge_loss']:.4f} edge_acc={tr.get('edge_acc', float('nan')):.3f}"
         print(
             f"epoch {epoch + 1}/{epochs}  loss={tr['loss']:.4f}  val_loss={va['loss']:.4f}  "
-            f"steps={tr['steps']}  {elapsed / 60:.1f} min"
+            f"steps={tr['steps']}  {elapsed / 60:.1f} min{edge_msg}"
         )
         history.append(
             epoch=epoch + 1,
@@ -263,9 +363,12 @@ def train(
             val_loss=va["loss"],
             lr=sched.get_last_lr()[0],
             seconds=elapsed,
+            **{k: v for k, v in tr.items() if k.startswith("edge_")},
+            **{f"val_{k}": v for k, v in va.items() if k.startswith("edge_")},
         )
         payload = {
             "state_dict": model.state_dict(),
+            "edge_state_dict": edge_scorer.state_dict() if edge_scorer is not None else None,
             "optimizer": opt.state_dict(),
             "scheduler": sched.state_dict(),
             "epoch": epoch + 1,

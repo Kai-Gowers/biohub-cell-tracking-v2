@@ -1,12 +1,19 @@
-"""Detector: a single-frame 3D U-Net, one head, one objective.
+"""Detector: a 2-frame-window 3D U-Net with cross-frame attention, one head.
 
-    a(r) = q_theta(h_theta(V_t))(r),  p_t(r) = sigmoid(a(r))
+    a(r) = q_theta(h_theta(V_{t-1:t}))(r),  p_t(r) = sigmoid(a(r))
 
-This is deliberately the smallest model that can plausibly detect cell
-centers. There is no temporal window and no edge head -- linking is a
-distance-gated bipartite assignment (`link.py`), not learned. Add either back
-only once a held-out score shows this baseline is missing something they
-would fix, and record that evidence in `reports/`.
+Each frame in the window is encoded independently (shared weights) through
+every stage; at every stage EXCEPT full resolution, a multi-head
+self-attention block mixes information across the window before pooling
+further. The decoder then predicts a single frame -- the LAST one in the
+window -- from the attention-enriched features, using that frame's own
+attended stage outputs as skip connections.
+
+This replaces the v2 baseline's single-frame, no-temporal-window detector,
+per reports/2026-08-25-sample-solution-0.90-comparison.md item 4: the 0.90
+sample solution attends at every encoder stage except full-res, richer than
+this repo's original "none at all" and the v1 sibling repo's
+bottleneck-only mixing.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cell_tracking.config import UNET_BASE_CHANNELS, UNET_DEPTH
+from cell_tracking.config import ATTN_HEADS, UNET_BASE_CHANNELS, UNET_DEPTH
 
 
 class ConvBlock3d(nn.Module):
@@ -32,6 +39,29 @@ class ConvBlock3d(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+class TemporalAttention3d(nn.Module):
+    """Self-attention across the window's T frames, independently per voxel.
+
+    Input/output (B, T, C, Z, Y, X). Each spatial location is its own
+    attention "batch" over a length-T token sequence -- cheap, since T is
+    small (2), and the whole point is to let the model mix information
+    between frames rather than within one frame's own receptive field.
+    """
+
+    def __init__(self, channels: int, num_heads: int = ATTN_HEADS) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(channels)
+        self.attn = nn.MultiheadAttention(channels, num_heads, batch_first=True)
+
+    def forward(self, feats: torch.Tensor) -> torch.Tensor:
+        b, t, c, z, y, x = feats.shape
+        tokens = feats.permute(0, 3, 4, 5, 1, 2).reshape(-1, t, c)
+        normed = self.norm(tokens)
+        attended, _ = self.attn(normed, normed, normed, need_weights=False)
+        tokens = tokens + attended
+        return tokens.reshape(b, z, y, x, t, c).permute(0, 4, 5, 1, 2, 3)
 
 
 def _match_spatial(t: torch.Tensor, target_zyx: tuple[int, int, int]) -> torch.Tensor:
@@ -54,18 +84,24 @@ def _match_spatial(t: torch.Tensor, target_zyx: tuple[int, int, int]) -> torch.T
 
 
 class UNet3D(nn.Module):
-    """(B, 1, Z, Y, X) -> (B, 1, Z, Y, X) per-voxel center logit."""
+    """(B, T, Z, Y, X) -> (B, 1, Z, Y, X) per-voxel center logit for the last frame."""
 
     def __init__(
         self,
         base_channels: int = UNET_BASE_CHANNELS,
         depth: int = UNET_DEPTH,
+        attn_heads: int = ATTN_HEADS,
     ) -> None:
         super().__init__()
         chs = [base_channels * (2**i) for i in range(depth)]
 
         self.encoders = nn.ModuleList()
         self.pools = nn.ModuleList()
+        # No attention at stage 0 (full res) -- index i's attention lives at
+        # self.temporal_attn[i - 1] for i > 0.
+        self.temporal_attn = nn.ModuleList(
+            TemporalAttention3d(ch, attn_heads) for ch in chs[1:]
+        )
         prev = 1
         for ch in chs:
             self.encoders.append(ConvBlock3d(prev, ch))
@@ -74,6 +110,7 @@ class UNet3D(nn.Module):
 
         bottleneck_ch = chs[-1] * 2
         self.bottleneck = ConvBlock3d(chs[-1], bottleneck_ch)
+        self.bottleneck_attn = TemporalAttention3d(bottleneck_ch, attn_heads)
 
         self.upconvs = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -84,20 +121,35 @@ class UNet3D(nn.Module):
             prev = ch
         self.out_proj = nn.Conv3d(chs[0], 1, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.ndim != 5 or x.shape[1] != 1:
-            raise ValueError(f"Expected (B, 1, Z, Y, X), got {tuple(x.shape)}")
+    def forward(
+        self, x: torch.Tensor, return_features: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if x.ndim != 5:
+            raise ValueError(f"Expected (B, T, Z, Y, X), got {tuple(x.shape)}")
 
-        h = x
+        b, t = x.shape[0], x.shape[1]
+        h = x.reshape(b * t, 1, *x.shape[2:])
         skips: list[torch.Tensor] = []
-        for enc, pool in zip(self.encoders, self.pools):
+        for i, (enc, pool) in enumerate(zip(self.encoders, self.pools)):
             h = enc(h)
-            skips.append(h)
+            c, z, y, xw = h.shape[1:]
+            feats = h.reshape(b, t, c, z, y, xw)
+            if i > 0:
+                feats = self.temporal_attn[i - 1](feats)
+            skips.append(feats[:, -1])  # target (last) frame only, for the decoder
+            h = feats.reshape(b * t, c, z, y, xw)
             h = pool(h)
+
         h = self.bottleneck(h)
+        c, z, y, xw = h.shape[1:]
+        feats = self.bottleneck_attn(h.reshape(b, t, c, z, y, xw))
+        h = feats[:, -1]
 
         for up, dec, skip in zip(self.upconvs, self.decoders, reversed(skips)):
             h = up(h)
             h = _match_spatial(h, skip.shape[-3:])
             h = dec(torch.cat([h, skip], dim=1))
-        return self.out_proj(h)
+        logits = self.out_proj(h)
+        if return_features:
+            return logits, h
+        return logits

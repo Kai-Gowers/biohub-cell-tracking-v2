@@ -60,7 +60,10 @@ def package(
     manifest: dict[str, object] = {
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "checkpoint": None,
-        "pipeline": "detector (single-frame 3D U-Net) -> distance-gated bipartite linking",
+        "pipeline": (
+            "detector (2-frame windowed 3D U-Net, cross-frame attention) "
+            "-> learned edge scorer -> distance-gated greedy linking"
+        ),
     }
 
     # Ship `_best` when it exists -- that is what `get_checkpoint()` prefers, so

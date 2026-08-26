@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 
 from cell_tracking.config import PEAK_NMS_RADIUS_VX
 
@@ -138,3 +139,28 @@ def pair_within_radius(
     if len(si) == 0:
         return np.zeros((0, 2), dtype=np.int64)
     return np.stack([si, di], axis=1).astype(np.int64)
+
+
+def match_to_reference(pos_um: np.ndarray, ref_um: np.ndarray, radius_um: float) -> np.ndarray:
+    """Optimal one-to-one bipartite match of each `pos_um` row to `ref_um`, within radius.
+
+    Same shape of matching as `metric.match_nodes_per_frame` (exact
+    assignment via a distance-or-huge cost matrix), but reusable with an
+    arbitrary radius -- `metric.py` is copied verbatim from the sibling repo
+    and is the competition's metric, not a pipeline choice, so this stays a
+    separate helper rather than parameterizing that one.
+
+    Returns an (N,) int64 array of row indices into `ref_um`, or -1 where a
+    `pos_um` row has no match within `radius_um`.
+    """
+    n, m = len(pos_um), len(ref_um)
+    out = np.full(n, -1, dtype=np.int64)
+    if n == 0 or m == 0:
+        return out
+    dist = np.linalg.norm(pos_um[:, None, :] - ref_um[None, :, :], axis=-1)
+    cost = np.where(dist <= radius_um, dist, 1e6)
+    rows, cols = linear_sum_assignment(cost)
+    for r, c in zip(rows, cols):
+        if cost[r, c] <= radius_um:
+            out[r] = c
+    return out

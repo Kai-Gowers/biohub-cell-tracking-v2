@@ -17,10 +17,12 @@ from cell_tracking.config import (
     MAX_DETECTIONS_PER_FRAME,
     SCALE,
     TAU,
+    TTA_FLIPS,
     get_checkpoint,
     grid_to_voxels,
 )
 from cell_tracking.models.detector import UNet3D
+from cell_tracking.models.edge_model import EdgeScorer
 from cell_tracking.peaks import local_maxima, subvoxel_offset
 
 
@@ -44,7 +46,14 @@ class FrameDetections:
 
 def load_model(
     checkpoint: Path | str | None = None, device: torch.device | None = None
-) -> tuple[UNet3D, torch.device]:
+) -> tuple[UNet3D, EdgeScorer | None, torch.device]:
+    """Load the detector and, if the checkpoint has one, the edge scorer.
+
+    Returns `(model, edge_scorer, device)` -- `edge_scorer` is `None` for a
+    checkpoint trained with `train_edge_model=False` or predating the edge
+    model, and callers should fall back to distance-based linking (`link.py`
+    already does this when `edge_scores=None`).
+    """
     path = Path(checkpoint) if checkpoint else get_checkpoint()
     if path is None or not Path(path).exists():
         raise FileNotFoundError(
@@ -67,7 +76,41 @@ def load_model(
     model = UNet3D(**ckpt.get("config", {})).to(device)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
-    return model, device
+
+    edge_scorer = None
+    if ckpt.get("edge_state_dict") is not None:
+        edge_scorer = EdgeScorer().to(device)
+        edge_scorer.load_state_dict(ckpt["edge_state_dict"])
+        edge_scorer.eval()
+        print("loaded edge scorer from the same checkpoint")
+    else:
+        print("no edge scorer in checkpoint; linking will fall back to distance-based scoring")
+    return model, edge_scorer, device
+
+
+def predict_logits_tta(
+    model: UNet3D, window: np.ndarray, device: torch.device, *, tta: bool = True
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run the detector on one `(T, Z, Y, X)` window, averaging LOGITS over TTA flips.
+
+    Returns `(logits, features)` for a single frame, both `(Z, Y, X)` /
+    `(C, Z, Y, X)`. `features` always comes from the identity orientation --
+    TTA is purely a detection-quality trick (report item 3); re-deriving node
+    features per flip would need un-flipping the feature map too for no
+    benefit the edge model needs.
+    """
+    x = torch.from_numpy(window).unsqueeze(0).to(device)  # (1, T, Z, Y, X)
+    with torch.no_grad():
+        logits0, feats0 = model(x, return_features=True)
+    acc = logits0[0, 0].clone()
+    if tta:
+        for flip_dims in TTA_FLIPS[1:]:
+            xf = torch.flip(x, dims=list(flip_dims))
+            with torch.no_grad():
+                lf, _ = model(xf, return_features=True)
+            acc = acc + torch.flip(lf[0, 0], dims=list(flip_dims))
+        acc = acc / len(TTA_FLIPS)
+    return acc, feats0[0]
 
 
 def extract_detections(

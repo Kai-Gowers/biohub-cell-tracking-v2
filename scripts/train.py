@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from cell_tracking.config import CHECKPOINT_NAME, get_cache_dir, get_train_dir
+from cell_tracking.config import CHECKPOINT_NAME, EDGE_LOSS_WEIGHT, get_cache_dir, get_train_dir
 from cell_tracking.train import History, train
 
 
@@ -30,6 +30,12 @@ def main() -> int:
     parser.add_argument("--patience", type=int, default=None, help="Stop after N epochs with no --select-by gain.")
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--history-json", type=Path, default=None)
+    parser.add_argument("--no-augment", action="store_true", help="Disable flip + brightness augmentation.")
+    parser.add_argument("--no-edge-model", action="store_true", help="Train the detector only.")
+    parser.add_argument("--edge-loss-weight", type=float, default=None)
+    parser.add_argument(
+        "--edge-every", type=int, default=1, help="Train the edge scorer every Nth step."
+    )
     args = parser.parse_args()
 
     train_dir = args.train_dir or get_train_dir()
@@ -54,6 +60,10 @@ def main() -> int:
         history=history,
         select_by=args.select_by,
         patience=args.patience,
+        use_augment=not args.no_augment,
+        train_edge_model=not args.no_edge_model,
+        edge_loss_weight=args.edge_loss_weight if args.edge_loss_weight is not None else EDGE_LOSS_WEIGHT,
+        edge_every=args.edge_every,
     )
     if args.history_json:
         history.to_json(args.history_json)

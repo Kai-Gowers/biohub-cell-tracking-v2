@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cell-tracking"
 version = "0.1.0"
-description = "Biohub cell tracking -- simplest baseline: single-frame 3D U-Net detector + distance-gated linking"
+description = "Biohub cell tracking -- windowed 3D U-Net detector + learned edge model + greedy linking"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
