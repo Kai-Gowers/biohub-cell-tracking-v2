@@ -54,12 +54,23 @@ class TemporalAttention3d(nn.Module):
     attention "batch" over a length-T token sequence -- cheap, since T is
     small (2), and the whole point is to let the model mix information
     between frames rather than within one frame's own receptive field.
+
+    No dropout here, deliberately: `batch x Z x Y x X` gets flattened into
+    `nn.MultiheadAttention`'s batch dimension below, which comfortably
+    exceeds 65535 at this task's resolutions (e.g. `4 x 32^3` at the first
+    attention stage). Nonzero dropout forces PyTorch's fused SDPA kernel
+    down a path that tracks per-element dropout masks via an RNG limited to
+    a 65535 batch size, and fails outright above it -- confirmed on Kaggle:
+    "Efficient attention cannot produce valid seed and offset outputs when
+    the batch size exceeds (65535)". Regularization here comes from
+    `ConvBlock3d`'s `Dropout3d` and `EdgeScorer`'s dropout instead, neither
+    of which has this limitation.
     """
 
-    def __init__(self, channels: int, num_heads: int = ATTN_HEADS, dropout: float = 0.0) -> None:
+    def __init__(self, channels: int, num_heads: int = ATTN_HEADS) -> None:
         super().__init__()
         self.norm = nn.LayerNorm(channels)
-        self.attn = nn.MultiheadAttention(channels, num_heads, dropout=dropout, batch_first=True)
+        self.attn = nn.MultiheadAttention(channels, num_heads, batch_first=True)
 
     def forward(self, feats: torch.Tensor) -> torch.Tensor:
         b, t, c, z, y, x = feats.shape
@@ -107,7 +118,7 @@ class UNet3D(nn.Module):
         # No attention at stage 0 (full res) -- index i's attention lives at
         # self.temporal_attn[i - 1] for i > 0.
         self.temporal_attn = nn.ModuleList(
-            TemporalAttention3d(ch, attn_heads, dropout=dropout) for ch in chs[1:]
+            TemporalAttention3d(ch, attn_heads) for ch in chs[1:]
         )
         prev = 1
         for i, ch in enumerate(chs):
@@ -118,7 +129,7 @@ class UNet3D(nn.Module):
 
         bottleneck_ch = chs[-1] * 2
         self.bottleneck = ConvBlock3d(chs[-1], bottleneck_ch, dropout=dropout)
-        self.bottleneck_attn = TemporalAttention3d(bottleneck_ch, attn_heads, dropout=dropout)
+        self.bottleneck_attn = TemporalAttention3d(bottleneck_ch, attn_heads)
 
         self.upconvs = nn.ModuleList()
         self.decoders = nn.ModuleList()
