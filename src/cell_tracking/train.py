@@ -147,6 +147,19 @@ def compute_edge_loss(
     }
 
 
+class TrainingDivergedError(RuntimeError):
+    """Raised when the training loss goes non-finite (NaN/Inf) mid-epoch.
+
+    Once a weight is actually NaN there is no self-recovery -- every later
+    forward pass stays NaN too, `current < best_value` is always False for a
+    NaN `current`, and `patience` only notices after grinding through that
+    many more full epochs of pure wasted compute (observed: 13 epochs, ~50+
+    minutes, before a patience=15 run caught it). Stopping immediately
+    instead costs at most the rest of the epoch it happened in, and the last
+    good `_best` checkpoint is untouched since it was written before this.
+    """
+
+
 @dataclass
 class History:
     entries: list[dict] = field(default_factory=list)
@@ -308,6 +321,12 @@ def train(
                             edge_l, edge_stats = edge_out
                             loss = loss + edge_loss_weight * edge_l
                             stats.update(edge_stats)
+                if not torch.isfinite(loss):
+                    raise TrainingDivergedError(
+                        f"non-finite loss ({float(loss.detach()):.4g}) at epoch {epoch + 1} "
+                        f"batch {n_steps + 1}/{n_batches} -- stopping now rather than "
+                        "continuing to train a corrupted model."
+                    )
                 scaler.scale(loss / grad_accum).backward()
                 if (k + 1) % grad_accum == 0 or k == n_batches - 1:
                     scaler.unscale_(opt)
@@ -346,7 +365,18 @@ def train(
         )
     for epoch in range(start_epoch, epochs):
         t0 = time.time()
-        tr = run_epoch(epoch, train_names, frames_per_volume, True)
+        try:
+            tr = run_epoch(epoch, train_names, frames_per_volume, True)
+        except TrainingDivergedError as exc:
+            print(f"\n{exc}")
+            if best_epoch:
+                print(
+                    f"Stopping: last good checkpoint is epoch {best_epoch} "
+                    f"({select_by}={best_value:.5f}) at {best_path}."
+                )
+            else:
+                print("Stopping: no epoch improved yet, so there is no _best checkpoint to fall back to.")
+            break
         va = run_epoch(epoch, val_names, val_frames_per_volume, False)
         sched.step()
         elapsed = time.time() - t0
