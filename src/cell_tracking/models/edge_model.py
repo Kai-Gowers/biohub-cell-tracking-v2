@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cell_tracking.config import EDGE_FEATURE_DIM, EDGE_HIDDEN_DIM
+from cell_tracking.config import EDGE_DROPOUT, EDGE_FEATURE_DIM, EDGE_HIDDEN_DIM
 
 
 def sample_node_features(feature_map: torch.Tensor, grid_coords: torch.Tensor) -> torch.Tensor:
@@ -41,14 +41,21 @@ def sample_node_features(feature_map: torch.Tensor, grid_coords: torch.Tensor) -
 class EdgeScorer(nn.Module):
     """Scores one candidate (src, dst) link from sampled node features + relative position."""
 
-    def __init__(self, feature_dim: int = EDGE_FEATURE_DIM, hidden_dim: int = EDGE_HIDDEN_DIM) -> None:
+    def __init__(
+        self,
+        feature_dim: int = EDGE_FEATURE_DIM,
+        hidden_dim: int = EDGE_HIDDEN_DIM,
+        dropout: float = EDGE_DROPOUT,
+    ) -> None:
         super().__init__()
         in_dim = feature_dim * 2 + 4  # src feat, dst feat, rel zyx (um), distance (um)
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
 

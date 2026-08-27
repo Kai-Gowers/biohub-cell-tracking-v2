@@ -59,6 +59,17 @@ UNET_DEPTH = 3
 WINDOW_SIZE = 2       # frames per model input; the LAST frame is the prediction target
 ATTN_HEADS = 4        # must evenly divide every encoder stage's channel count
 
+# Dropout in the coarser stages only (not stage 0/full-res, not the finest
+# decoder stage that feeds out_proj and the edge scorer) -- added after a
+# clean, low-noise training run (val_frames_per_volume=16, an actually
+# annealing LR) still showed train loss improving smoothly to epoch 21 while
+# val_loss peaked at epoch 6 and never recovered: a real train/val gap, not
+# a measurement artifact. Full-res dropout risks the sub-voxel localization
+# precision this task depends on, so it stays concentrated where the model
+# is learning more abstract, more overfit-prone representations.
+UNET_DROPOUT = 0.1
+EDGE_DROPOUT = 0.1
+
 # --- Edge model -------------------------------------------------------------
 # A learned edge scorer (report item 1/2), trained via detect-and-match in
 # train.py/edge_train.py: candidate pairs and their positive/negative labels

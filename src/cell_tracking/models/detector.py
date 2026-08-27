@@ -22,20 +22,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cell_tracking.config import ATTN_HEADS, UNET_BASE_CHANNELS, UNET_DEPTH
+from cell_tracking.config import ATTN_HEADS, UNET_BASE_CHANNELS, UNET_DEPTH, UNET_DROPOUT
 
 
 class ConvBlock3d(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int) -> None:
+    def __init__(self, in_ch: int, out_ch: int, dropout: float = 0.0) -> None:
         super().__init__()
-        self.net = nn.Sequential(
+        layers = [
             nn.Conv3d(in_ch, out_ch, 3, padding=1, bias=False),
             nn.InstanceNorm3d(out_ch, affine=True),
             nn.GELU(),
             nn.Conv3d(out_ch, out_ch, 3, padding=1, bias=False),
             nn.InstanceNorm3d(out_ch, affine=True),
             nn.GELU(),
-        )
+        ]
+        if dropout > 0:
+            # Dropout3d zeroes whole channels, not independent voxels -- with
+            # this much spatial correlation between neighbouring voxels,
+            # element-wise dropout barely perturbs anything.
+            layers.append(nn.Dropout3d(dropout))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -50,10 +56,10 @@ class TemporalAttention3d(nn.Module):
     between frames rather than within one frame's own receptive field.
     """
 
-    def __init__(self, channels: int, num_heads: int = ATTN_HEADS) -> None:
+    def __init__(self, channels: int, num_heads: int = ATTN_HEADS, dropout: float = 0.0) -> None:
         super().__init__()
         self.norm = nn.LayerNorm(channels)
-        self.attn = nn.MultiheadAttention(channels, num_heads, batch_first=True)
+        self.attn = nn.MultiheadAttention(channels, num_heads, dropout=dropout, batch_first=True)
 
     def forward(self, feats: torch.Tensor) -> torch.Tensor:
         b, t, c, z, y, x = feats.shape
@@ -91,6 +97,7 @@ class UNet3D(nn.Module):
         base_channels: int = UNET_BASE_CHANNELS,
         depth: int = UNET_DEPTH,
         attn_heads: int = ATTN_HEADS,
+        dropout: float = UNET_DROPOUT,
     ) -> None:
         super().__init__()
         chs = [base_channels * (2**i) for i in range(depth)]
@@ -100,24 +107,30 @@ class UNet3D(nn.Module):
         # No attention at stage 0 (full res) -- index i's attention lives at
         # self.temporal_attn[i - 1] for i > 0.
         self.temporal_attn = nn.ModuleList(
-            TemporalAttention3d(ch, attn_heads) for ch in chs[1:]
+            TemporalAttention3d(ch, attn_heads, dropout=dropout) for ch in chs[1:]
         )
         prev = 1
-        for ch in chs:
-            self.encoders.append(ConvBlock3d(prev, ch))
+        for i, ch in enumerate(chs):
+            # Stage 0 is full resolution -- no dropout there, see UNET_DROPOUT's comment.
+            self.encoders.append(ConvBlock3d(prev, ch, dropout=dropout if i > 0 else 0.0))
             self.pools.append(nn.MaxPool3d(2))
             prev = ch
 
         bottleneck_ch = chs[-1] * 2
-        self.bottleneck = ConvBlock3d(chs[-1], bottleneck_ch)
-        self.bottleneck_attn = TemporalAttention3d(bottleneck_ch, attn_heads)
+        self.bottleneck = ConvBlock3d(chs[-1], bottleneck_ch, dropout=dropout)
+        self.bottleneck_attn = TemporalAttention3d(bottleneck_ch, attn_heads, dropout=dropout)
 
         self.upconvs = nn.ModuleList()
         self.decoders = nn.ModuleList()
         prev = bottleneck_ch
-        for ch in reversed(chs):
+        n_stages = len(chs)
+        for i, ch in enumerate(reversed(chs)):
             self.upconvs.append(nn.ConvTranspose3d(prev, ch, 2, stride=2))
-            self.decoders.append(ConvBlock3d(prev, ch))
+            # The last decoder stage is full resolution and feeds both
+            # out_proj and the edge scorer's sampled features -- no dropout
+            # there either, for the same reason stage 0 skips it.
+            is_finest = i == n_stages - 1
+            self.decoders.append(ConvBlock3d(prev, ch, dropout=0.0 if is_finest else dropout))
             prev = ch
         self.out_proj = nn.Conv3d(chs[0], 1, kernel_size=1)
 
