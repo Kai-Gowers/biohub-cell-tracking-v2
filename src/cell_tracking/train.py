@@ -154,17 +154,37 @@ def compute_edge_loss(
     out = sample_edge_pair(model, s, t, device)
     if out is None:
         return None
-    feat_src, feat_dst, rel_um, y = out
+    feat_src, feat_dst, rel_um, y, dst_idx, n_dst = out
     logits = edge_scorer(feat_src, feat_dst, rel_um)
-    loss = edge_loss(logits, y)
+    loss, probs = edge_loss(logits, y, dst_idx, n_dst)
     with torch.no_grad():
-        pred = (torch.sigmoid(logits) >= 0.5).float()
-        acc = float((pred == y).float().mean()) if len(y) else float("nan")
+        # Rank-1 accuracy: among targets with a true parent present, does the
+        # highest-probability candidate match it? This is what `link.py`'s
+        # greedy selection actually needs, unlike a raw >=0.5 threshold,
+        # which parent-softmax probabilities aren't calibrated against (a
+        # target with many competing candidates can have a correct top pick
+        # well under 0.5). Reported as separate correct/total counts, not a
+        # per-step ratio -- a random sampled frame pair often has zero
+        # positive-labeled targets early in training, and `run_epoch`'s
+        # generic per-step-average aggregation would let one undefined (NaN)
+        # step poison the whole epoch's average.
+        rank1_correct = 0.0
+        rank1_total = 0.0
+        if len(y):
+            best_per_dst = probs.new_full((n_dst,), float("-inf")).scatter_reduce(
+                0, dst_idx, probs, reduce="amax", include_self=True
+            )
+            is_top = probs >= best_per_dst[dst_idx]
+            pos = y > 0.5
+            rank1_total = float(pos.sum())
+            if rank1_total:
+                rank1_correct = float(is_top[pos].float().sum())
     return loss, {
         "edge_loss": float(loss.detach()),
         "edge_pairs": len(y),
         "edge_pos": float(y.sum()),
-        "edge_acc": acc,
+        "edge_rank1_correct": rank1_correct,
+        "edge_rank1_total": rank1_total,
     }
 
 
@@ -427,10 +447,17 @@ def train(
                 "scaler_scale": scaler.get_scale(),
                 "n_skipped_steps": n_skipped_steps,
             }
+        # Pooled across the whole epoch's sampled steps, not averaged
+        # per-step: a rank-1 ratio needs to weight by how many labeled
+        # targets each step actually had, and most early-training steps
+        # have zero (see compute_edge_loss).
+        rank1_total = totals.pop("edge_rank1_total", 0.0)
+        rank1_correct = totals.pop("edge_rank1_correct", 0.0)
+        edge_acc = {"edge_acc": rank1_correct / rank1_total} if rank1_total > 0 else {}
         return {k: v / max(n_steps, 1) for k, v in totals.items()} | {
             "steps": n_steps,
             "frames": len(work),
-        } | diag
+        } | diag | edge_acc
 
     run_started = started_at if started_at is not None else time.time()
     if started_at is not None and max_hours is not None:
