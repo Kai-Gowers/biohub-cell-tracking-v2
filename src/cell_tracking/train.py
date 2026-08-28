@@ -103,6 +103,18 @@ def _param_norm(*modules) -> float:
     return total_sq**0.5
 
 
+def _grad_norm(param_list) -> float:
+    """L2 norm of `.grad` across a parameter list. Safe to call post-clip: if
+    clipping actually triggered, every component was rescaled by the same
+    factor, so the RATIO between components' norms -- what this is for --
+    survives even though the absolute values shrink."""
+    total_sq = 0.0
+    for p in param_list:
+        if p.grad is not None:
+            total_sq += float(p.grad.detach().float().pow(2).sum())
+    return total_sq**0.5
+
+
 def detection_target(shape_zyx: tuple[int, int, int], node_grid: np.ndarray) -> np.ndarray:
     """Binary target: 1 at each ground-truth node voxel, 0 everywhere else."""
     target = np.zeros(shape_zyx, dtype=np.float32)
@@ -251,6 +263,18 @@ def train(
     model = UNet3D().to(device)
     edge_scorer = EdgeScorer().to(device) if train_edge_model else None
     params = list(model.parameters()) + (list(edge_scorer.parameters()) if edge_scorer else [])
+    # Named subsets for per-component gradient-norm diagnostics (see
+    # TrainingDivergedError's docstring / the diag print line below) -- kept
+    # separate from `params` itself, which is what actually gets clipped and
+    # optimized as one combined group.
+    conv_params = (
+        list(model.encoders.parameters())
+        + list(model.decoders.parameters())
+        + list(model.bottleneck.parameters())
+        + list(model.out_proj.parameters())
+    )
+    attn_params = list(model.temporal_attn.parameters()) + list(model.bottleneck_attn.parameters())
+    edge_params = list(edge_scorer.parameters()) if edge_scorer else []
     opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
     start_epoch = 0
@@ -313,6 +337,9 @@ def train(
         n_batches = (len(work) + batch_size - 1) // batch_size
         every = min(log_every, max(1, n_batches // 10)) if log_every else 0
         grad_norms: list[float] = []
+        conv_grad_norms: list[float] = []
+        attn_grad_norms: list[float] = []
+        edge_grad_norms: list[float] = []
         n_skipped_steps = 0
         if training:
             opt.zero_grad(set_to_none=True)
@@ -344,6 +371,9 @@ def train(
                     exc.diag = {
                         "grad_norm_max": max(grad_norms) if grad_norms else float("nan"),
                         "grad_norm_mean": sum(grad_norms) / len(grad_norms) if grad_norms else float("nan"),
+                        "conv_grad_norm_max": max(conv_grad_norms) if conv_grad_norms else float("nan"),
+                        "attn_grad_norm_max": max(attn_grad_norms) if attn_grad_norms else float("nan"),
+                        "edgescorer_grad_norm_max": max(edge_grad_norms) if edge_grad_norms else float("nan"),
                         "scaler_scale": scaler.get_scale(),
                         "n_skipped_steps": n_skipped_steps,
                     }
@@ -353,6 +383,10 @@ def train(
                     scaler.unscale_(opt)
                     grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0)
                     grad_norms.append(float(grad_norm))
+                    conv_grad_norms.append(_grad_norm(conv_params))
+                    attn_grad_norms.append(_grad_norm(attn_params))
+                    if edge_params:
+                        edge_grad_norms.append(_grad_norm(edge_params))
                     # GradScaler backs off its scale the instant it finds an
                     # inf/nan gradient and silently skips that step's update --
                     # a leading indicator of instability well before a loss
@@ -387,6 +421,9 @@ def train(
             diag = {
                 "grad_norm_max": max(grad_norms),
                 "grad_norm_mean": sum(grad_norms) / len(grad_norms),
+                "conv_grad_norm_max": max(conv_grad_norms) if conv_grad_norms else float("nan"),
+                "attn_grad_norm_max": max(attn_grad_norms) if attn_grad_norms else float("nan"),
+                "edgescorer_grad_norm_max": max(edge_grad_norms) if edge_grad_norms else float("nan"),
                 "scaler_scale": scaler.get_scale(),
                 "n_skipped_steps": n_skipped_steps,
             }
@@ -415,6 +452,9 @@ def train(
             print(
                 f"  diag at divergence: grad_norm(max/mean)={diag.get('grad_norm_max', float('nan')):.3f}/"
                 f"{diag.get('grad_norm_mean', float('nan')):.3f}  "
+                f"grad_norm_max(conv/attn/edge)={diag.get('conv_grad_norm_max', float('nan')):.3f}/"
+                f"{diag.get('attn_grad_norm_max', float('nan')):.3f}/"
+                f"{diag.get('edgescorer_grad_norm_max', float('nan')):.3f}  "
                 f"scaler_scale={diag.get('scaler_scale', float('nan')):.0f}  "
                 f"skipped_steps_this_epoch={diag.get('n_skipped_steps', 0)}  "
                 f"|W|_conv={conv_norm:.2f}  |W|_attn={attn_norm:.2f}  |W|_edge={edge_norm:.2f}"
@@ -443,6 +483,9 @@ def train(
         print(
             f"  diag: grad_norm(max/mean)={tr.get('grad_norm_max', float('nan')):.3f}/"
             f"{tr.get('grad_norm_mean', float('nan')):.3f}  "
+            f"grad_norm_max(conv/attn/edge)={tr.get('conv_grad_norm_max', float('nan')):.3f}/"
+            f"{tr.get('attn_grad_norm_max', float('nan')):.3f}/"
+            f"{tr.get('edgescorer_grad_norm_max', float('nan')):.3f}  "
             f"scaler_scale={tr.get('scaler_scale', float('nan')):.0f}  "
             f"skipped_steps={tr.get('n_skipped_steps', 0)}  "
             f"|W|_conv={conv_norm:.2f}  |W|_attn={attn_norm:.2f}  |W|_edge={edge_norm:.2f}"
@@ -455,6 +498,9 @@ def train(
             seconds=elapsed,
             grad_norm_max=tr.get("grad_norm_max"),
             grad_norm_mean=tr.get("grad_norm_mean"),
+            conv_grad_norm_max=tr.get("conv_grad_norm_max"),
+            attn_grad_norm_max=tr.get("attn_grad_norm_max"),
+            edgescorer_grad_norm_max=tr.get("edgescorer_grad_norm_max"),
             scaler_scale=tr.get("scaler_scale"),
             n_skipped_steps=tr.get("n_skipped_steps", 0),
             weight_norm_conv=conv_norm,
