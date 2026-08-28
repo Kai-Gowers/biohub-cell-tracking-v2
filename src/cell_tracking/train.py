@@ -94,6 +94,15 @@ class VolumeSampler:
         return Sample(window=window, node_grid=grid)
 
 
+def _param_norm(*modules) -> float:
+    """L2 norm of every parameter across `modules`, combined (not summed norms)."""
+    total_sq = 0.0
+    for m in modules:
+        for p in m.parameters():
+            total_sq += float(p.detach().float().pow(2).sum())
+    return total_sq**0.5
+
+
 def detection_target(shape_zyx: tuple[int, int, int], node_grid: np.ndarray) -> np.ndarray:
     """Binary target: 1 at each ground-truth node voxel, 0 everywhere else."""
     target = np.zeros(shape_zyx, dtype=np.float32)
@@ -303,6 +312,8 @@ def train(
         t_start = time.time()
         n_batches = (len(work) + batch_size - 1) // batch_size
         every = min(log_every, max(1, n_batches // 10)) if log_every else 0
+        grad_norms: list[float] = []
+        n_skipped_steps = 0
         if training:
             opt.zero_grad(set_to_none=True)
         for k in range(n_batches):
@@ -322,17 +333,37 @@ def train(
                             loss = loss + edge_loss_weight * edge_l
                             stats.update(edge_stats)
                 if not torch.isfinite(loss):
-                    raise TrainingDivergedError(
+                    exc = TrainingDivergedError(
                         f"non-finite loss ({float(loss.detach()):.4g}) at epoch {epoch + 1} "
                         f"batch {n_steps + 1}/{n_batches} -- stopping now rather than "
                         "continuing to train a corrupted model."
                     )
+                    # This epoch's run_epoch() never returns, so its diagnostics
+                    # would otherwise be lost -- exactly the data most worth
+                    # having at the moment things actually broke.
+                    exc.diag = {
+                        "grad_norm_max": max(grad_norms) if grad_norms else float("nan"),
+                        "grad_norm_mean": sum(grad_norms) / len(grad_norms) if grad_norms else float("nan"),
+                        "scaler_scale": scaler.get_scale(),
+                        "n_skipped_steps": n_skipped_steps,
+                    }
+                    raise exc
                 scaler.scale(loss / grad_accum).backward()
                 if (k + 1) % grad_accum == 0 or k == n_batches - 1:
                     scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(params, 1.0)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0)
+                    grad_norms.append(float(grad_norm))
+                    # GradScaler backs off its scale the instant it finds an
+                    # inf/nan gradient and silently skips that step's update --
+                    # a leading indicator of instability well before a loss
+                    # actually goes non-finite. Comparing scale before/after
+                    # is the standard way to detect that skip (no public
+                    # "did I skip" flag exists).
+                    scale_before = scaler.get_scale()
                     scaler.step(opt)
                     scaler.update()
+                    if scaler.get_scale() < scale_before:
+                        n_skipped_steps += 1
                     opt.zero_grad(set_to_none=True)
             else:
                 with torch.no_grad(), torch.autocast("cuda", enabled=amp):
@@ -351,10 +382,18 @@ def train(
                     f"  epoch {epoch + 1} batch {n_steps}/{n_batches} "
                     f"loss={totals['loss'] / n_steps:.4f} ({rate:.2f} batch/s)"
                 )
+        diag: dict[str, float] = {}
+        if training and grad_norms:
+            diag = {
+                "grad_norm_max": max(grad_norms),
+                "grad_norm_mean": sum(grad_norms) / len(grad_norms),
+                "scaler_scale": scaler.get_scale(),
+                "n_skipped_steps": n_skipped_steps,
+            }
         return {k: v / max(n_steps, 1) for k, v in totals.items()} | {
             "steps": n_steps,
             "frames": len(work),
-        }
+        } | diag
 
     run_started = started_at if started_at is not None else time.time()
     if started_at is not None and max_hours is not None:
@@ -369,6 +408,17 @@ def train(
             tr = run_epoch(epoch, train_names, frames_per_volume, True)
         except TrainingDivergedError as exc:
             print(f"\n{exc}")
+            diag = getattr(exc, "diag", {})
+            conv_norm = _param_norm(model.encoders, model.decoders, model.bottleneck, model.out_proj)
+            attn_norm = _param_norm(model.temporal_attn, model.bottleneck_attn)
+            edge_norm = _param_norm(edge_scorer) if edge_scorer is not None else 0.0
+            print(
+                f"  diag at divergence: grad_norm(max/mean)={diag.get('grad_norm_max', float('nan')):.3f}/"
+                f"{diag.get('grad_norm_mean', float('nan')):.3f}  "
+                f"scaler_scale={diag.get('scaler_scale', float('nan')):.0f}  "
+                f"skipped_steps_this_epoch={diag.get('n_skipped_steps', 0)}  "
+                f"|W|_conv={conv_norm:.2f}  |W|_attn={attn_norm:.2f}  |W|_edge={edge_norm:.2f}"
+            )
             if best_epoch:
                 print(
                     f"Stopping: last good checkpoint is epoch {best_epoch} "
@@ -387,12 +437,29 @@ def train(
             f"epoch {epoch + 1}/{epochs}  loss={tr['loss']:.4f}  val_loss={va['loss']:.4f}  "
             f"steps={tr['steps']}  {elapsed / 60:.1f} min{edge_msg}"
         )
+        conv_norm = _param_norm(model.encoders, model.decoders, model.bottleneck, model.out_proj)
+        attn_norm = _param_norm(model.temporal_attn, model.bottleneck_attn)
+        edge_norm = _param_norm(edge_scorer) if edge_scorer is not None else 0.0
+        print(
+            f"  diag: grad_norm(max/mean)={tr.get('grad_norm_max', float('nan')):.3f}/"
+            f"{tr.get('grad_norm_mean', float('nan')):.3f}  "
+            f"scaler_scale={tr.get('scaler_scale', float('nan')):.0f}  "
+            f"skipped_steps={tr.get('n_skipped_steps', 0)}  "
+            f"|W|_conv={conv_norm:.2f}  |W|_attn={attn_norm:.2f}  |W|_edge={edge_norm:.2f}"
+        )
         history.append(
             epoch=epoch + 1,
             loss=tr["loss"],
             val_loss=va["loss"],
             lr=sched.get_last_lr()[0],
             seconds=elapsed,
+            grad_norm_max=tr.get("grad_norm_max"),
+            grad_norm_mean=tr.get("grad_norm_mean"),
+            scaler_scale=tr.get("scaler_scale"),
+            n_skipped_steps=tr.get("n_skipped_steps", 0),
+            weight_norm_conv=conv_norm,
+            weight_norm_attn=attn_norm,
+            weight_norm_edge=edge_norm,
             **{k: v for k, v in tr.items() if k.startswith("edge_")},
             **{f"val_{k}": v for k, v in va.items() if k.startswith("edge_")},
         )
