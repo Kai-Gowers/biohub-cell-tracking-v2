@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from cell_tracking.config import CENTER_NEG_ALPHA
+from cell_tracking.config import CENTER_NEG_ALPHA, EDGE_NEG_ALPHA
 
 
 def detection_loss(
@@ -49,73 +49,21 @@ def detection_loss(
     return (pos_term + neg_term).mean()
 
 
-def parent_softmax(logits: torch.Tensor, dst_idx: torch.Tensor, n_dst: int) -> torch.Tensor:
-    """P_ij = softmax_i(l_ij): normalize each candidate edge against the other
-    candidates competing for the same target (destination) node, instead of
-    scoring every candidate independently.
+def edge_loss(logits: torch.Tensor, labels: torch.Tensor, *, alpha: float = EDGE_NEG_ALPHA) -> torch.Tensor:
+    """Weighted BCE over candidate edges, same shape of reasoning as `detection_loss`.
 
-    `logits` is a flat list of candidate pairs; `dst_idx[p]` names which
-    target node candidate pair `p` competes for, so this is a segmented
-    softmax, grouped by target rather than by source -- normalizing over
-    parents (not children) is what would let one parent connect to two
-    daughters without stealing probability from its sibling, should
-    divisions ever be added; this baseline still enforces in-degree <= 1 via
-    `link.py`'s greedy selection regardless.
-
-    Adapted from the sibling repo's `losses.parent_softmax`
-    (`../biohub-cell-tracking`), which measured *removing* this
-    normalization (in favor of independent per-pair scoring) as losing 70%
-    of true edges vs. 3% for the normalized version -- see
-    reports/2026-08-28-parent-softmax-edge-loss.md.
-
-    Computed in fp32 regardless of the incoming dtype: under AMP the logits
-    arrive as fp16, whose smallest normal value (~6e-5) would make the
-    1e-12 denominator guard round to zero and return infinities. There are
-    only a few thousand candidate pairs per step, so the upcast is free.
+    Candidates are gated to `LINK_RADIUS_UM` and labeled via detect-and-match
+    (`edge_train.py`), so the overwhelming majority are non-edges -- either a
+    genuine distractor or one/both endpoints unmatched to any annotated GT
+    node. `alpha` down-weights that negative pool the same way
+    `CENTER_NEG_ALPHA` does for background voxels.
     """
     if logits.numel() == 0:
-        return logits
-    logits = logits.float()
-    max_per_dst = logits.new_full((n_dst,), float("-inf")).scatter_reduce(
-        0, dst_idx, logits, reduce="amax", include_self=True
-    )
-    shifted = torch.exp(logits - max_per_dst[dst_idx])
-    denom = logits.new_zeros(n_dst).scatter_add(0, dst_idx, shifted)
-    return shifted / denom[dst_idx].clamp_min(1e-12)
-
-
-def edge_loss(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    dst_idx: torch.Tensor,
-    n_dst: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """BCE over parent-softmax-normalized probabilities.
-
-    Candidates are gated to `LINK_RADIUS_UM` and grouped by target (dst)
-    node; `parent_softmax` makes each target's candidates compete for its
-    probability mass instead of being scored independently.
-
-    A target with no true parent among its candidates -- the real parent
-    wasn't detected this frame, or the target genuinely starts a new track
-    -- can't be represented by a softmax over only the candidates present:
-    probabilities that must sum to 1 can't also all be pushed toward 0.
-    That isn't a hard example, it's a contradiction, so such targets are
-    masked out of the loss entirely rather than trained against.
-
-    Returns `(loss, probs)` so callers (train diagnostics, prediction) can
-    reuse the normalized probabilities instead of recomputing them.
-    """
-    probs = parent_softmax(logits, dst_idx, n_dst)
-    if logits.numel() == 0:
-        return logits.new_zeros(()), probs
-    has_positive = torch.zeros(n_dst, dtype=torch.bool, device=logits.device)
-    pos_dst = dst_idx[labels > 0.5]
-    if pos_dst.numel():
-        has_positive[pos_dst] = True
-    mask = has_positive[dst_idx]
-    if not bool(mask.any()):
-        return logits.new_zeros(()), probs
-    p = probs.clamp(1e-6, 1.0 - 1e-6)
-    bce = -(labels * torch.log(p) + (1.0 - labels) * torch.log(1.0 - p))
-    return bce[mask].mean(), probs
+        return logits.new_zeros(())
+    bce = F.binary_cross_entropy_with_logits(logits, labels, reduction="none")
+    pos = (labels > 0.5).to(logits.dtype)
+    neg = 1.0 - pos
+    n_pos, n_neg = pos.sum(), neg.sum().clamp_min(1.0)
+    pos_term = (pos * bce).sum() / n_pos.clamp_min(1.0) if n_pos > 0 else logits.new_zeros(())
+    neg_term = alpha * (neg * bce).sum() / n_neg
+    return pos_term + neg_term

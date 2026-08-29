@@ -81,9 +81,7 @@ EDGE_FEATURE_DIM = UNET_BASE_CHANNELS
 EDGE_HIDDEN_DIM = 64
 EDGE_MATCH_RADIUS_UM = 5.0   # GT-match radius for building detect-and-match labels
 EDGE_LOSS_WEIGHT = 1.0
-# Candidate edges are scored via a per-target (parent-softmax) normalization
-# rather than independent BCE, so there is no separate negative-class weight
-# here the way CENTER_NEG_ALPHA has for detection -- see losses.edge_loss.
+EDGE_NEG_ALPHA = 0.05        # candidate pairs are mostly non-edges; mirrors CENTER_NEG_ALPHA
 
 # --- Augmentation -----------------------------------------------------------
 # y/x flip + brightness jitter, shared across every frame in a training

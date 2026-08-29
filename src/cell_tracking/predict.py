@@ -26,7 +26,6 @@ from cell_tracking.detect import FrameDetections, extract_detections, predict_lo
 from cell_tracking.graph import TrackGraph
 from cell_tracking.io_geff import write_geff
 from cell_tracking.link import link_frames
-from cell_tracking.losses import parent_softmax
 from cell_tracking.models.detector import UNet3D
 from cell_tracking.models.edge_model import EdgeScorer, sample_node_features
 from cell_tracking.peaks import pair_within_radius
@@ -49,11 +48,9 @@ def predict_volume(
 ) -> tuple[TrackGraph, dict]:
     """Track one volume end to end: per-frame detection, then frame-pair linking.
 
-    `edge_scorer`, if given, scores every distance-gated candidate pair,
-    normalized per-target via `losses.parent_softmax` to match how it was
-    trained (`edge_train.py`/`losses.edge_loss`), and `link.link_frames`
-    uses those probabilities (thresholded at `link_score_threshold`) instead
-    of falling back to negative distance.
+    `edge_scorer`, if given, scores every distance-gated candidate pair and
+    `link.link_frames` uses those probabilities (thresholded at
+    `link_score_threshold`) instead of falling back to negative distance.
     `tta` averages detection logits over identity + 3 flips (see
     `detect.predict_logits_tta`); it has no effect on edge scoring.
     """
@@ -103,9 +100,7 @@ def predict_volume(
                 rel_um = torch.from_numpy(dst.um[pairs[:, 1]] - src.um[pairs[:, 0]]).float().to(device)
                 with torch.no_grad():
                     edge_logits = edge_scorer(fs, fd, rel_um)
-                    dst_idx = torch.from_numpy(pairs[:, 1]).to(device)
-                    edge_probs = parent_softmax(edge_logits, dst_idx, len(dst))
-                edge_scores = edge_probs.detach().cpu().numpy()
+                edge_scores = torch.sigmoid(edge_logits).detach().cpu().numpy()
         selected = link_frames(
             src.um,
             dst.um,

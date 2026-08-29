@@ -58,14 +58,12 @@ def sample_edge_pair(
     max_per_frame: int = MAX_DETECTIONS_PER_FRAME,
     link_radius_um: float = LINK_RADIUS_UM,
     match_radius_um: float = EDGE_MATCH_RADIUS_UM,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int] | None:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None:
     """One forward pass over frames (t, t+1) of `sampler`'s volume.
 
-    Returns `(feat_src, feat_dst, rel_um, labels, dst_idx, n_dst)` for every
-    candidate pair within `link_radius_um`, or `None` when either frame
-    detects nothing, or there are no candidate pairs at all (both are common
-    early in training). `dst_idx`/`n_dst` group candidates by target node for
-    `losses.parent_softmax`.
+    Returns `(feat_src, feat_dst, rel_um, labels)` for every candidate pair
+    within `link_radius_um`, or `None` when either frame detects nothing, or
+    there are no candidate pairs at all (both are common early in training).
     """
     n_t = sampler.frames.n_t
     if n_t < 2:
@@ -131,4 +129,4 @@ def sample_edge_pair(
     feat_src, feat_dst = feat0[src_idx], feat1[dst_idx]
     rel_um = torch.from_numpy(um1[pairs[:, 1]] - um0[pairs[:, 0]]).float().to(device)
     y = torch.from_numpy(labels).to(device)
-    return feat_src, feat_dst, rel_um, y, dst_idx, grid1.shape[0]
+    return feat_src, feat_dst, rel_um, y
