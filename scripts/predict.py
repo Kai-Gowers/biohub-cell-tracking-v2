@@ -14,7 +14,7 @@ import json
 import time
 from pathlib import Path
 
-from cell_tracking.config import get_cache_dir, get_test_dir
+from cell_tracking.config import LINK_SCORE_THRESHOLD, get_cache_dir, get_test_dir
 from cell_tracking.detect import load_model
 from cell_tracking.predict import predict_volume, write_prediction
 
@@ -38,6 +38,12 @@ def main() -> int:
     parser.add_argument("--no-tta", action="store_true", help="Skip flip test-time augmentation.")
     parser.add_argument(
         "--no-edge-model", action="store_true", help="Ignore a checkpoint's edge scorer; link by distance."
+    )
+    parser.add_argument(
+        "--link-score-threshold",
+        type=float,
+        default=LINK_SCORE_THRESHOLD,
+        help="Minimum edge-scorer probability to keep a candidate link.",
     )
     args = parser.parse_args()
 
@@ -69,6 +75,7 @@ def main() -> int:
             subvoxel=not args.no_subvoxel,
             edge_scorer=edge_scorer,
             tta=not args.no_tta,
+            link_score_threshold=args.link_score_threshold,
         )
         write_prediction(graph, args.out_dir, name)
         print(
