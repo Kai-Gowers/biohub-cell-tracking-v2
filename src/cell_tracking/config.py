@@ -75,9 +75,14 @@ EDGE_DROPOUT = 0.1
 # train.py/edge_train.py: candidate pairs and their positive/negative labels
 # come from the detector's OWN live peaks matched to ground truth, never a
 # synthetic GT-node + nearest-peak-decoy set. Node features are sampled
-# (trilinear) from the decoder's finest feature map, which has
-# UNET_BASE_CHANNELS channels at full grid resolution.
-EDGE_FEATURE_DIM = UNET_BASE_CHANNELS
+# (trilinear) from a dedicated "edge neck" -- one extra conv layer in
+# UNet3D, branching off the same finest-decoder-stage features `out_proj`
+# reads for detection, widening them from UNET_BASE_CHANNELS=16 to
+# EDGE_FEATURE_DIM channels. Detection is unaffected (out_proj still reads
+# the narrow features directly); this only gives the edge scorer more
+# channels to work with than detection itself needs -- see
+# reports/2026-08-29-edge-feature-neck.md.
+EDGE_FEATURE_DIM = 64
 EDGE_HIDDEN_DIM = 64
 EDGE_MATCH_RADIUS_UM = 5.0   # GT-match radius for building detect-and-match labels
 EDGE_LOSS_WEIGHT = 1.0

@@ -14,6 +14,13 @@ per reports/2026-08-25-sample-solution-0.90-comparison.md item 4: the 0.90
 sample solution attends at every encoder stage except full-res, richer than
 this repo's original "none at all" and the v1 sibling repo's
 bottleneck-only mixing.
+
+`return_features=True` additionally returns `edge_neck`'s output -- a
+dedicated wider (EDGE_FEATURE_DIM-channel) embedding branching off the same
+finest-decoder-stage features `out_proj` reads, rather than the raw
+UNET_BASE_CHANNELS=16 features `out_proj` uses. Detection is unaffected;
+this only gives the edge scorer (`models/edge_model.py`) more information
+to work with -- see reports/2026-08-29-edge-feature-neck.md.
 """
 
 from __future__ import annotations
@@ -22,7 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cell_tracking.config import ATTN_HEADS, UNET_BASE_CHANNELS, UNET_DEPTH, UNET_DROPOUT
+from cell_tracking.config import ATTN_HEADS, EDGE_FEATURE_DIM, UNET_BASE_CHANNELS, UNET_DEPTH, UNET_DROPOUT
 
 
 class ConvBlock3d(nn.Module):
@@ -144,6 +151,17 @@ class UNet3D(nn.Module):
             self.decoders.append(ConvBlock3d(prev, ch, dropout=0.0 if is_finest else dropout))
             prev = ch
         self.out_proj = nn.Conv3d(chs[0], 1, kernel_size=1)
+        # Dedicated wider embedding for the edge scorer, branching off the
+        # same finest-decoder-stage features `out_proj` reads -- detection
+        # is untouched (out_proj still reads the narrow `h` directly below),
+        # this just gives EdgeScorer more channels than UNET_BASE_CHANNELS=16
+        # to work with. No dropout, for the same sub-voxel-precision reason
+        # the finest decoder stage itself skips it.
+        self.edge_neck = nn.Sequential(
+            nn.Conv3d(chs[0], EDGE_FEATURE_DIM, 3, padding=1, bias=False),
+            nn.InstanceNorm3d(EDGE_FEATURE_DIM, affine=True),
+            nn.GELU(),
+        )
 
     def forward(
         self, x: torch.Tensor, return_features: bool = False
@@ -175,5 +193,5 @@ class UNet3D(nn.Module):
             h = dec(torch.cat([h, skip], dim=1))
         logits = self.out_proj(h)
         if return_features:
-            return logits, h
+            return logits, self.edge_neck(h)
         return logits
