@@ -144,7 +144,11 @@ def compute_edge_loss(
     names: list[str],
     rng: random.Random,
     device: torch.device,
-) -> tuple[torch.Tensor, dict] | None:
+) -> tuple[torch.Tensor, dict, tuple[str, int]] | None:
+    """Returns `(loss, stats, (volume_name, t))` -- the sampled volume/frame is
+    reported alongside the loss so a non-finite event can be traced back to a
+    specific source sample, not just "somewhere in training" (see
+    TrainingDivergedError's docstring / run_epoch's `_batch_log`)."""
     candidates = [n for n in names if len(samplers[n]) >= 2]
     if not candidates:
         return None
@@ -160,12 +164,16 @@ def compute_edge_loss(
     with torch.no_grad():
         pred = (torch.sigmoid(logits) >= 0.5).float()
         acc = float((pred == y).float().mean()) if len(y) else float("nan")
-    return loss, {
-        "edge_loss": float(loss.detach()),
-        "edge_pairs": len(y),
-        "edge_pos": float(y.sum()),
-        "edge_acc": acc,
-    }
+    return (
+        loss,
+        {
+            "edge_loss": float(loss.detach()),
+            "edge_pairs": len(y),
+            "edge_pos": float(y.sum()),
+            "edge_acc": acc,
+        },
+        (name, t),
+    )
 
 
 class TrainingDivergedError(RuntimeError):
@@ -253,7 +261,28 @@ def train(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     device = device or _pick_device()
     amp = (device.type == "cuda") if amp is None else amp
-    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    # float16's ~65504 max and narrow dynamic range is a plausible driver of
+    # the recurring NaN divergence chased across this project's history: the
+    # conv/decoder stack's gradient sits at the clip ceiling essentially
+    # every epoch from early in training (not an escalating rare event), and
+    # GradScaler-caught inf/nan gradients recur every 6-8 epochs regardless
+    # of edge-scorer variant -- see reports/2026-08-29-nan-divergence-bf16.md.
+    # bfloat16 has float32's exponent range, so the same weight/activation
+    # magnitudes can't overflow it, at the cost of less mantissa precision.
+    # Prefer it on CUDA when the GPU has native support (Ampere+); fall back
+    # to float16 (with GradScaler's loss-scaling safety net) on older GPUs
+    # (e.g. Kaggle's T4s) where bf16 would only run emulated and slow.
+    if amp and device.type == "cuda" and torch.cuda.is_bf16_supported():
+        autocast_dtype = torch.bfloat16
+    elif amp and device.type == "cuda":
+        autocast_dtype = torch.float16
+    else:
+        autocast_dtype = torch.float32  # unused: torch.autocast(enabled=False) ignores dtype
+    print(f"AMP: {'bf16' if autocast_dtype == torch.bfloat16 else ('fp16' if amp else 'disabled')}")
+    # GradScaler's loss scaling exists specifically to counter float16
+    # underflow; bfloat16 doesn't need it (matches float32's exponent
+    # range), so only enable it when actually autocasting to float16.
+    scaler = torch.amp.GradScaler("cuda", enabled=(amp and autocast_dtype == torch.float16))
     history = history if history is not None else History()
 
     all_names = names or list_geff_datasets(train_dir)
@@ -341,6 +370,12 @@ def train(
         attn_grad_norms: list[float] = []
         edge_grad_norms: list[float] = []
         n_skipped_steps = 0
+        # Samples accumulated since the last optimizer step -- attached to a
+        # caught inf/nan skip or a hard divergence so either can be traced
+        # back to a specific source volume/frame, not just "somewhere this
+        # epoch". Cleared after every step (skipped or not), since a skip is
+        # specific to whatever was accumulated into that step's gradient.
+        accum_samples: list[tuple[str, int]] = []
         if training:
             opt.zero_grad(set_to_none=True)
         for k in range(n_batches):
@@ -350,15 +385,19 @@ def train(
                 for name, t in chunk
             ]
             do_edge = edge_scorer is not None and edge_every > 0 and (n_steps % edge_every == 0)
+            edge_sample: tuple[str, int] | None = None
             if training:
-                with torch.autocast("cuda", enabled=amp):
+                with torch.autocast("cuda", dtype=autocast_dtype, enabled=amp):
                     loss, stats = compute_loss(model, batch, device)
                     if do_edge:
                         edge_out = compute_edge_loss(model, edge_scorer, samplers, split, rng, device)
                         if edge_out is not None:
-                            edge_l, edge_stats = edge_out
+                            edge_l, edge_stats, edge_sample = edge_out
                             loss = loss + edge_loss_weight * edge_l
                             stats.update(edge_stats)
+                accum_samples.extend(chunk)
+                if edge_sample is not None:
+                    accum_samples.append(edge_sample)
                 if not torch.isfinite(loss):
                     exc = TrainingDivergedError(
                         f"non-finite loss ({float(loss.detach()):.4g}) at epoch {epoch + 1} "
@@ -376,6 +415,7 @@ def train(
                         "edgescorer_grad_norm_max": max(edge_grad_norms) if edge_grad_norms else float("nan"),
                         "scaler_scale": scaler.get_scale(),
                         "n_skipped_steps": n_skipped_steps,
+                        "batch_samples": list(accum_samples),
                     }
                     raise exc
                 scaler.scale(loss / grad_accum).backward()
@@ -398,14 +438,16 @@ def train(
                     scaler.update()
                     if scaler.get_scale() < scale_before:
                         n_skipped_steps += 1
+                        print(f"    skipped step (caught inf/nan) samples: {accum_samples}")
                     opt.zero_grad(set_to_none=True)
+                    accum_samples = []
             else:
-                with torch.no_grad(), torch.autocast("cuda", enabled=amp):
+                with torch.no_grad(), torch.autocast("cuda", dtype=autocast_dtype, enabled=amp):
                     _, stats = compute_loss(model, batch, device)
                     if do_edge:
                         edge_out = compute_edge_loss(model, edge_scorer, samplers, split, rng, device)
                         if edge_out is not None:
-                            _, edge_stats = edge_out
+                            _, edge_stats, _ = edge_out
                             stats.update(edge_stats)
             for key, v in stats.items():
                 totals[key] = totals.get(key, 0.0) + v
@@ -459,6 +501,7 @@ def train(
                 f"skipped_steps_this_epoch={diag.get('n_skipped_steps', 0)}  "
                 f"|W|_conv={conv_norm:.2f}  |W|_attn={attn_norm:.2f}  |W|_edge={edge_norm:.2f}"
             )
+            print(f"  batch samples (volume, t) at divergence: {diag.get('batch_samples', [])}")
             if best_epoch:
                 print(
                     f"Stopping: last good checkpoint is epoch {best_epoch} "
