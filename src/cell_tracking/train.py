@@ -260,6 +260,16 @@ def train(
     out_path = Path(out_path or (Path.cwd() / CHECKPOINT_NAME))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     device = device or _pick_device()
+    if device.type == "cuda":
+        # Batch shapes here are essentially fixed (batch_size, WINDOW_SIZE, ...
+        # spatial dims), so cuDNN's benchmark mode -- try several algorithms
+        # per shape once, then cache the fastest -- pays for itself almost
+        # immediately. Without it cuDNN falls back to a heuristic default
+        # pick, which has far less tuning behind it for bf16 Conv3d than for
+        # fp16 Conv3d and is a likely culprit behind the ~5x epoch slowdown
+        # measured after switching to bf16 autocast (see
+        # reports/2026-08-30-cudnn-benchmark-bf16-slowdown.md).
+        torch.backends.cudnn.benchmark = True
     amp = (device.type == "cuda") if amp is None else amp
     # float16's ~65504 max and narrow dynamic range is a plausible driver of
     # the recurring NaN divergence chased across this project's history: the
