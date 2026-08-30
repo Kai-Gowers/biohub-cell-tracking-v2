@@ -272,7 +272,6 @@ def train(
         + list(model.decoders.parameters())
         + list(model.bottleneck.parameters())
         + list(model.out_proj.parameters())
-        + list(model.edge_neck.parameters())
     )
     attn_params = list(model.temporal_attn.parameters()) + list(model.bottleneck_attn.parameters())
     edge_params = list(edge_scorer.parameters()) if edge_scorer else []
@@ -447,9 +446,7 @@ def train(
         except TrainingDivergedError as exc:
             print(f"\n{exc}")
             diag = getattr(exc, "diag", {})
-            conv_norm = _param_norm(
-                model.encoders, model.decoders, model.bottleneck, model.out_proj, model.edge_neck
-            )
+            conv_norm = _param_norm(model.encoders, model.decoders, model.bottleneck, model.out_proj)
             attn_norm = _param_norm(model.temporal_attn, model.bottleneck_attn)
             edge_norm = _param_norm(edge_scorer) if edge_scorer is not None else 0.0
             print(
@@ -480,9 +477,7 @@ def train(
             f"epoch {epoch + 1}/{epochs}  loss={tr['loss']:.4f}  val_loss={va['loss']:.4f}  "
             f"steps={tr['steps']}  {elapsed / 60:.1f} min{edge_msg}"
         )
-        conv_norm = _param_norm(
-            model.encoders, model.decoders, model.bottleneck, model.out_proj, model.edge_neck
-        )
+        conv_norm = _param_norm(model.encoders, model.decoders, model.bottleneck, model.out_proj)
         attn_norm = _param_norm(model.temporal_attn, model.bottleneck_attn)
         edge_norm = _param_norm(edge_scorer) if edge_scorer is not None else 0.0
         print(
