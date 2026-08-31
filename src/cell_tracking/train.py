@@ -36,6 +36,13 @@ from cell_tracking.losses import detection_loss, edge_loss
 from cell_tracking.models.detector import UNet3D
 from cell_tracking.models.edge_model import EdgeScorer
 
+# Tried splitting this into a tighter conv-only clip (CONV_GRAD_CLIP_NORM=0.5)
+# to test whether cumulative conv/decoder growth was driving the recurring
+# NaN divergence -- reverted after measuring a divergence at epoch 15,
+# earlier than either directly-comparable same-LR joint-clip run (epoch 22,
+# 23). No evidence it helped. See reports/2026-08-30-conv-grad-clip.md and
+# reports/2026-08-30-nan-recurrence-after-conv-clip.md.
+
 
 @dataclass
 class Sample:
@@ -261,14 +268,12 @@ def train(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     device = device or _pick_device()
     if device.type == "cuda":
-        # Batch shapes here are essentially fixed (batch_size, WINDOW_SIZE, ...
-        # spatial dims), so cuDNN's benchmark mode -- try several algorithms
-        # per shape once, then cache the fastest -- pays for itself almost
-        # immediately. Without it cuDNN falls back to a heuristic default
-        # pick, which has far less tuning behind it for bf16 Conv3d than for
-        # fp16 Conv3d and is a likely culprit behind the ~5x epoch slowdown
-        # measured after switching to bf16 autocast (see
-        # reports/2026-08-30-cudnn-benchmark-bf16-slowdown.md).
+        # cuDNN benchmark mode: batch shapes here are essentially fixed, so
+        # this is generally harmless/free, but measured NO effect on the
+        # bf16 slowdown below (reports/2026-08-30-cudnn-benchmark-bf16-slowdown.md
+        # first suspected it as the cause; scripts/bench_amp_dtype.py on a
+        # real Kaggle T4 showed identical timings with this on or off --
+        # ruled out, not a fix).
         torch.backends.cudnn.benchmark = True
     amp = (device.type == "cuda") if amp is None else amp
     # float16's ~65504 max and narrow dynamic range is a plausible driver of
@@ -279,10 +284,16 @@ def train(
     # of edge-scorer variant -- see reports/2026-08-29-nan-divergence-bf16.md.
     # bfloat16 has float32's exponent range, so the same weight/activation
     # magnitudes can't overflow it, at the cost of less mantissa precision.
-    # Prefer it on CUDA when the GPU has native support (Ampere+); fall back
-    # to float16 (with GradScaler's loss-scaling safety net) on older GPUs
-    # (e.g. Kaggle's T4s) where bf16 would only run emulated and slow.
-    if amp and device.type == "cuda" and torch.cuda.is_bf16_supported():
+    #
+    # torch.cuda.is_bf16_supported() is NOT a reliable guard for this: it
+    # returned True on a Kaggle Tesla T4 (Turing, compute capability 7.5,
+    # NO bf16 tensor cores at all), and bf16 measured ~7x slower than fp16
+    # end-to-end there (Conv3d/InstanceNorm3d alone: ~20x slower; the
+    # attention layers: only ~1.9x -- scripts/bench_amp_dtype.py,
+    # reports/2026-08-30-cudnn-benchmark-bf16-slowdown.md). Check compute
+    # capability directly instead: bf16 tensor-core acceleration needs
+    # Ampere or newer (>= 8.0).
+    if amp and device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8:
         autocast_dtype = torch.bfloat16
     elif amp and device.type == "cuda":
         autocast_dtype = torch.float16
@@ -431,6 +442,14 @@ def train(
                 scaler.scale(loss / grad_accum).backward()
                 if (k + 1) % grad_accum == 0 or k == n_batches - 1:
                     scaler.unscale_(opt)
+                    # Split conv/other clipping (CONV_GRAD_CLIP_NORM=0.5) was
+                    # tried and reverted: it measured a hard divergence at
+                    # epoch 15, earlier than both directly-comparable
+                    # same-LR joint-clip runs (epoch 22, 23) -- no evidence
+                    # it helped, mild evidence it didn't. See
+                    # reports/2026-08-30-conv-grad-clip.md for the full
+                    # writeup and reports/2026-08-30-nan-recurrence-after-conv-clip.md
+                    # for this result. Back to one joint clip.
                     grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0)
                     grad_norms.append(float(grad_norm))
                     conv_grad_norms.append(_grad_norm(conv_params))
