@@ -21,6 +21,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from cell_tracking.config import ATTN_HEADS, UNET_BASE_CHANNELS, UNET_DEPTH, UNET_DROPOUT
 
@@ -65,6 +66,13 @@ class TemporalAttention3d(nn.Module):
     the batch size exceeds (65535)". Regularization here comes from
     `ConvBlock3d`'s `Dropout3d` and `EdgeScorer`'s dropout instead, neither
     of which has this limitation.
+
+    The same >65535 flattened batch also breaks every FUSED SDPA backend
+    outright on an L40S (torch 2.6/cu124/driver on the BC HPC cluster) --
+    flash, memory-efficient, and cuDNN attention all raise "CUDA error:
+    invalid configuration argument" regardless of dropout or autocast dtype
+    (reports/2026-09-09-sdpa-math-backend-l40s.md has the isolated repro).
+    Only the plain MATH backend handles a batch this large; forced below.
     """
 
     def __init__(self, channels: int, num_heads: int = ATTN_HEADS) -> None:
@@ -76,7 +84,8 @@ class TemporalAttention3d(nn.Module):
         b, t, c, z, y, x = feats.shape
         tokens = feats.permute(0, 3, 4, 5, 1, 2).reshape(-1, t, c)
         normed = self.norm(tokens)
-        attended, _ = self.attn(normed, normed, normed, need_weights=False)
+        with sdpa_kernel(SDPBackend.MATH):
+            attended, _ = self.attn(normed, normed, normed, need_weights=False)
         tokens = tokens + attended
         return tokens.reshape(b, z, y, x, t, c).permute(0, 4, 5, 1, 2, 3)
 
