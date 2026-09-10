@@ -24,7 +24,10 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--frames-per-volume", type=int, default=20)
+    parser.add_argument("--val-frames-per-volume", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=2)
+    parser.add_argument("--max-hours", type=float, default=None)
     parser.add_argument("--limit-volumes", type=int, default=None, help="Smoke mode: first N volumes only.")
     parser.add_argument("--select-by", default="val_loss", help="Metric the `_best` checkpoint tracks.")
     parser.add_argument("--patience", type=int, default=None, help="Stop after N epochs with no --select-by gain.")
@@ -53,7 +56,10 @@ def main() -> int:
         epochs=args.epochs,
         lr=args.lr,
         frames_per_volume=args.frames_per_volume,
+        val_frames_per_volume=args.val_frames_per_volume,
+        batch_size=args.batch_size,
         grad_accum=args.grad_accum,
+        max_hours=args.max_hours,
         cache_dir=args.cache_dir or get_cache_dir(),
         names=names,
         resume=not args.no_resume,

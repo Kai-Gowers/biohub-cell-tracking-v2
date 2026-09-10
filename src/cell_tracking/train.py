@@ -111,10 +111,15 @@ def _param_norm(*modules) -> float:
 
 
 def _grad_norm(param_list) -> float:
-    """L2 norm of `.grad` across a parameter list. Safe to call post-clip: if
-    clipping actually triggered, every component was rescaled by the same
-    factor, so the RATIO between components' norms -- what this is for --
-    survives even though the absolute values shrink."""
+    """L2 norm of `.grad` across a parameter list.
+
+    Also safe to call post-clip if ever needed elsewhere: if clipping
+    actually triggered, every component was rescaled by the same factor, so
+    the RATIO between components' norms survives even though the absolute
+    values shrink. The per-group diagnostics below call this BEFORE
+    `clip_grad_norm_`, though, specifically to get the true pre-clip
+    magnitude of each group -- the post-clip ratio can't tell "barely over
+    the cap" from "wildly over the cap," only the pre-clip value can."""
     total_sq = 0.0
     for p in param_list:
         if p.grad is not None:
@@ -450,12 +455,20 @@ def train(
                     # reports/2026-08-30-conv-grad-clip.md for the full
                     # writeup and reports/2026-08-30-nan-recurrence-after-conv-clip.md
                     # for this result. Back to one joint clip.
-                    grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0)
-                    grad_norms.append(float(grad_norm))
+                    #
+                    # Per-group norms are measured HERE, before clipping, so
+                    # they're the true pre-clip magnitude each group asked
+                    # for -- measuring after `clip_grad_norm_` (as before)
+                    # only shows each group's share of the already-shrunk
+                    # joint vector, which can't distinguish "conv wanted 1.01"
+                    # from "conv wanted 100": both look like ~1.0 post-clip
+                    # whenever conv dominates the combined vector.
                     conv_grad_norms.append(_grad_norm(conv_params))
                     attn_grad_norms.append(_grad_norm(attn_params))
                     if edge_params:
                         edge_grad_norms.append(_grad_norm(edge_params))
+                    grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0)
+                    grad_norms.append(float(grad_norm))
                     # GradScaler backs off its scale the instant it finds an
                     # inf/nan gradient and silently skips that step's update --
                     # a leading indicator of instability well before a loss
