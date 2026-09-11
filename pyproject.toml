@@ -26,6 +26,20 @@ dev = [
     "ipykernel",
     "matplotlib",
 ]
+# ILP graph builder + reference-pack dependencies (install offline from
+# context/pack_primary/wheels: pip install --no-index --find-links <wheels> .[ilp]).
+# Do not install the bundled geff wheel (1.2.x); the env's geff 1.3.1 is newer.
+ilp = [
+    "tracksdata",
+    "ilpy>=0.5.1",
+    "pyscipopt",
+    "polars>=1.36",
+    "rustworkx>=0.17.1",
+    "sqlalchemy>=2",
+    "dask",
+    "imagecodecs",
+    "pyarrow",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

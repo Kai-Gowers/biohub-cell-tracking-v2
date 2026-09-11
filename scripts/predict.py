@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
-"""Predict one `.geff` tracking graph per test video.
+"""Predict one `.geff` tracking graph per video with the ported 0.942 pipeline.
 
-    python scripts/predict.py --out-dir dist/preds
-    python scripts/predict.py --split split.json --out-dir dist/preds
+    # full pipeline on the held-out split with the public weights
+    python scripts/predict.py --checkpoint context/pack_primary/weights/unet_transformer/split_0/edge_predictor_best.pth \
+        --secondary-checkpoint context/pack_secondary/weights/unet_transformer/split_0/edge_predictor_best.pth \
+        --deepcenter context/pack_deepcenter/weights/full_frame_center/best.pt \
+        --test-dir data/biohub-cell-tracking-during-development/train --split dist/heldout_split.json \
+        --out-dir dist/preds_val_pack
+
+    # competition test folder, default paths
+    python scripts/predict.py --checkpoint <ckpt> --out-dir dist/preds
 
 Kept separate from CSV generation so the predicted graphs stay inspectable.
+`--stage ilp` writes the pack-equivalent graph (before post-processing) with
+`edge_prob` as an edge property; `--stage raw` skips the ILP as well.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import time
 from pathlib import Path
 
-from cell_tracking.config import (
-    LINK_RADIUS_UM,
-    LINK_SCORE_THRESHOLD,
-    TTA_FLIPS,
-    TTA_FLIPS_WITH_Z,
-    get_cache_dir,
-    get_test_dir,
-)
-from cell_tracking.detect import load_model
-from cell_tracking.predict import predict_volume, write_prediction
+from cell_tracking.config import get_test_dir
+from cell_tracking.ilp import ILPConfig
+from cell_tracking.pack_predict import PredictConfig
+from cell_tracking.pipeline import STAGES, load_models, run_volume, write_result
+from cell_tracking.postprocess import PostprocessConfig
 
 
 def build_split(test_dir: Path, out_path: Path) -> list[str]:
@@ -33,47 +38,34 @@ def build_split(test_dir: Path, out_path: Path) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--test-dir", type=Path, default=None)
-    parser.add_argument("--cache-dir", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, default=Path("dist/preds"))
     parser.add_argument("--split", type=Path, default=None, help="JSON with {'datasets': [...]}.")
-    parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        action="append",
-        default=None,
-        help="Checkpoint to load. Repeat to ensemble several detectors (logits averaged; "
-        "the edge scorer comes from the first).",
-    )
     parser.add_argument("--volume", action="append", dest="volumes", default=None)
+    parser.add_argument("--checkpoint", type=Path, required=True, help="Primary weights (.pth state dict or repo checkpoint).")
+    parser.add_argument("--secondary-checkpoint", type=Path, default=None, help="Second seed for the dual-seed blend.")
+    parser.add_argument("--deepcenter", type=Path, default=None, help="DeepCenter best.pt for the gap-closing veto.")
+    parser.add_argument("--no-deepcenter-epoch-check", action="store_true")
+    parser.add_argument("--stage", choices=STAGES, default="full")
     parser.add_argument("--t-max", type=int, default=None, help="Debug: only the first N frames.")
-    parser.add_argument("--no-subvoxel", action="store_true", help="Emit integer-grid detection coordinates.")
-    parser.add_argument("--no-tta", action="store_true", help="Skip flip test-time augmentation.")
-    parser.add_argument("--tta-z", action="store_true", help="8-way TTA: also reflect z.")
-    parser.add_argument(
-        "--dump-candidates",
-        type=Path,
-        default=None,
-        help="Directory for per-volume .npz candidate/score dumps (for scripts/analyze_errors.py).",
-    )
-    parser.add_argument(
-        "--link-radius-um", type=float, default=LINK_RADIUS_UM, help="Candidate-link gate in um."
-    )
-    parser.add_argument(
-        "--no-edge-model", action="store_true", help="Ignore a checkpoint's edge scorer; link by distance."
-    )
-    parser.add_argument(
-        "--link-score-threshold",
-        type=float,
-        default=LINK_SCORE_THRESHOLD,
-        help="Minimum edge-scorer probability to keep a candidate link.",
-    )
+    parser.add_argument("--no-tta", action="store_true", help="Single view instead of 8-view D4 TTA.")
+    parser.add_argument("--tta-views", choices=["d4", "flip"], default="d4",
+                        help="d4 = notebook's 8 planar views; flip = the pack's original 4-view flip TTA.")
+    parser.add_argument("--no-edge-tta", action="store_true", help="Disable edge-feature TTA.")
+    parser.add_argument("--no-bidir", action="store_true", help="Disable bidirectional harmonic fusion.")
+    parser.add_argument("--no-ilp", action="store_true", help="Skip the ILP (greedy 1-parent/2-children candidates).")
+    parser.add_argument("--no-postprocess", action="store_true", help="Same as --stage ilp.")
+    parser.add_argument("--det-threshold", type=float, default=None)
+    parser.add_argument("--edge-threshold", type=float, default=None, help="Override the 0.48/0.5 candidate threshold.")
+    parser.add_argument("--post-off", action="append", default=[], metavar="FLAG",
+                        help="PostprocessConfig boolean to switch off, e.g. output_gap2_recovery (repeatable).")
+    parser.add_argument("--dump-stats", type=Path, default=None, help="Write per-volume stats JSON here.")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     test_dir = args.test_dir or get_test_dir()
     args.out_dir.mkdir(parents=True, exist_ok=True)
-
     if args.volumes:
         names = args.volumes
     elif args.split and args.split.exists():
@@ -83,42 +75,59 @@ def main() -> int:
         names = build_split(test_dir, split_path)
         print(f"wrote split: {split_path}")
 
-    checkpoints = args.checkpoint or [None]
-    model, edge_scorer, device = load_model(checkpoints[0])
-    models = [model]
-    for extra in checkpoints[1:]:
-        m, _, _ = load_model(extra, device=device)
-        models.append(m)
-    if args.no_edge_model:
-        edge_scorer = None
+    stage = "ilp" if args.no_postprocess and args.stage == "full" else args.stage
+    pcfg_kwargs: dict = {"use_ilp": not args.no_ilp}
+    if args.no_tta:
+        pcfg_kwargs["det_tta"] = False
+    pcfg_kwargs["det_tta_views"] = args.tta_views
+    if args.no_edge_tta:
+        pcfg_kwargs["edge_feature_tta"] = False
+        pcfg_kwargs["secondary_edge_feature_tta"] = False
+    if args.no_bidir:
+        pcfg_kwargs["bidirectional_edge_weight"] = 0.0
+    if args.det_threshold is not None:
+        pcfg_kwargs["det_threshold"] = args.det_threshold
+    if args.edge_threshold is not None:
+        pcfg_kwargs["edge_threshold_single"] = args.edge_threshold
+        pcfg_kwargs["edge_threshold_dual"] = args.edge_threshold
+    predict_cfg = PredictConfig(**pcfg_kwargs)
+    post_kwargs = {}
+    valid = {f.name for f in dataclasses.fields(PostprocessConfig)}
+    for flag in args.post_off:
+        if flag not in valid:
+            raise SystemExit(f"unknown PostprocessConfig field {flag!r}")
+        post_kwargs[flag] = False
+    post_cfg = PostprocessConfig(**post_kwargs)
+
+    models = load_models(
+        args.checkpoint, args.secondary_checkpoint, args.deepcenter,
+        deepcenter_expected_epoch=None if args.no_deepcenter_epoch_check else 2,
+    )
     print(
-        f"model on {device}; {len(names)} volume(s) from {test_dir}"
-        + (f"; ensemble of {len(models)} detectors" if len(models) > 1 else "")
+        f"models on {models.device}; dual_seed={models.secondary is not None}; "
+        f"deepcenter={models.deepcenter is not None}; stage={stage}; ilp={not args.no_ilp}; "
+        f"{len(names)} volume(s) from {test_dir}"
     )
 
+    all_stats = []
     started = time.time()
     for i, name in enumerate(names, 1):
-        graph, stats = predict_volume(
-            models if len(models) > 1 else model,
-            device,
-            Path(test_dir) / f"{name}.zarr",
-            cache_dir=args.cache_dir or get_cache_dir(),
-            t_max=args.t_max,
-            subvoxel=not args.no_subvoxel,
-            edge_scorer=edge_scorer,
-            tta=not args.no_tta,
-            tta_flips=TTA_FLIPS_WITH_Z if args.tta_z else TTA_FLIPS,
-            link_radius_um=args.link_radius_um,
-            link_score_threshold=args.link_score_threshold,
-            dump_candidates=args.dump_candidates,
+        result = run_volume(
+            models, Path(test_dir) / f"{name}.zarr",
+            predict_cfg=predict_cfg, ilp_cfg=ILPConfig(), post_cfg=post_cfg,
+            stage=stage, use_ilp=not args.no_ilp, max_frames=args.t_max, verbose=args.verbose,
         )
-        write_prediction(graph, args.out_dir, name)
+        write_result(result, args.out_dir, name)
+        s = result.stats
+        all_stats.append(s)
         print(
-            f"[{i}/{len(names)}] {name}: {stats['nodes']} nodes, {stats['edges']} edges, "
-            f"{stats['detections_per_frame']:.1f} det/frame, "
-            f"p_max={stats['max_prob_mean']:.4f}, {stats['infer_seconds']:.1f}s"
+            f"[{i}/{len(names)}] {name}: {s['nodes']} nodes, {s['edges']} edges, {s['divisions']} divisions, "
+            f"det={s['predict']['detections']} cand={s['predict']['candidate_edges']} "
+            f"retention_fallback={s['predict']['retention_fallback_frames']} {s['seconds']:.0f}s",
+            flush=True,
         )
-
+    if args.dump_stats:
+        args.dump_stats.write_text(json.dumps(all_stats, indent=1, default=str))
     print(f"\nWrote {len(names)} graph(s) to {args.out_dir} in {(time.time() - started) / 60:.1f} min")
     return 0
 

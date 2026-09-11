@@ -62,6 +62,13 @@ def main() -> int:
         default=None,
         help="Checkpoint whose held-out volume list to score (the honest signal).",
     )
+    parser.add_argument(
+        "--split",
+        type=Path,
+        default=None,
+        help="JSON {'datasets': [...]} naming the volumes to score (e.g. dist/heldout_split.json); "
+        "use for bare state-dict weights that carry no val_names.",
+    )
     parser.add_argument("--competition", action="store_true", help="Score the 4 test volumes.")
     parser.add_argument("--json-out", type=Path, default=None)
     args = parser.parse_args()
@@ -69,6 +76,9 @@ def main() -> int:
     train_dir = args.train_dir or get_train_dir()
     if args.volumes:
         names, label = args.volumes, "requested"
+    elif args.split:
+        names = json.loads(args.split.read_text())["datasets"]
+        label = f"split {args.split.name}"
     elif args.held_out:
         names, val_prefix = held_out_names(args.held_out)
         label = "HELD OUT (never trained on)"

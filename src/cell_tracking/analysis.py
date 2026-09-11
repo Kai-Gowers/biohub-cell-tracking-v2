@@ -33,7 +33,6 @@ from scipy.spatial import cKDTree
 from cell_tracking.config import SCALE
 from cell_tracking.io_geff import GeffGraph
 from cell_tracking.io_geff import embryo_of, read_geff
-from cell_tracking.link import link_frames
 from cell_tracking.metric import match_nodes_per_frame, score_edges
 
 # Nearest-neighbour distance bins (um) for the crowding breakdown. From the
@@ -277,6 +276,24 @@ def _rank(ci: dict, pu: int, pv: int) -> int:
     return int((scores > ci["scores"][hit[0]]).sum()) + 1
 
 
+def _greedy_one_to_one(pairs: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    """Score-sorted greedy selection with in/out-degree <= 1 (the old repo's linker)."""
+    if not len(pairs):
+        return np.zeros((0, 2), dtype=np.int64)
+    order = np.argsort(-scores, kind="stable")
+    used_s: set[int] = set()
+    used_d: set[int] = set()
+    out = []
+    for k in order:
+        i, j = int(pairs[k, 0]), int(pairs[k, 1])
+        if i in used_s or j in used_d:
+            continue
+        used_s.add(i)
+        used_d.add(j)
+        out.append((i, j))
+    return np.array(out, dtype=np.int64).reshape(-1, 2)
+
+
 def _regret(cand_index, pred_to_gt, gt_edges, gt_has_child, gt_has_parent) -> tuple[int, int]:
     """TP/FP of exact per-frame assignment minus greedy, on identical candidate scores."""
     d_tp = d_fp = 0
@@ -289,9 +306,7 @@ def _regret(cand_index, pred_to_gt, gt_edges, gt_has_child, gt_has_parent) -> tu
         n_s, n_d = len(src_ids), len(dst_ids)
         # positions are irrelevant when pairs+scores are given, so pass dummies
         keep = scores >= 0.5 if scores.max() <= 1.0 and scores.min() >= 0.0 else np.ones(len(scores), bool)
-        greedy = link_frames(
-            np.zeros((n_s, 3)), np.zeros((n_d, 3)), pairs=pairs, edge_scores=scores, score_threshold=0.5
-        ) if keep.any() else np.zeros((0, 2), dtype=np.int64)
+        greedy = _greedy_one_to_one(pairs[keep], scores[keep])
         cost = np.full((n_s, n_d), 1e6)
         cost[pairs[keep, 0], pairs[keep, 1]] = -scores[keep]
         r, c = linear_sum_assignment(cost)

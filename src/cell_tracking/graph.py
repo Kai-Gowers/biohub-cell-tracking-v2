@@ -46,6 +46,35 @@ class TrackGraph:
             )
         self.edges.add((u, v))
 
+    @classmethod
+    def from_arrays(
+        cls,
+        node_ids,
+        t,
+        zyx,
+        edges,
+        scores=None,
+    ) -> "TrackGraph":
+        """Build a graph that keeps the caller's node ids.
+
+        Post-processing assigns synthetic node ids (``max + 1``) that must
+        survive into the ``.geff`` / CSV rows, so ``add_node``'s auto-ids
+        cannot be used there.
+        """
+        node_ids = np.asarray(node_ids, dtype=np.int64)
+        t = np.asarray(t, dtype=np.int64)
+        zyx = np.asarray(zyx, dtype=np.float64).reshape(-1, 3)
+        if len(node_ids) != len(set(node_ids.tolist())):
+            raise ValueError("node_ids must be unique")
+        g = cls()
+        for i, nid in enumerate(node_ids.tolist()):
+            score = 1.0 if scores is None else float(scores[i])
+            g.nodes[nid] = Node(nid, int(t[i]), zyx[i].copy(), score)
+        g._next_id = int(node_ids.max()) + 1 if len(node_ids) else 1
+        for u, v in np.asarray(edges, dtype=np.int64).reshape(-1, 2).tolist():
+            g.add_edge(int(u), int(v))
+        return g
+
     # --- queries ----------------------------------------------------------
     def nodes_at(self, t: int) -> list[int]:
         return [n for n, node in self.nodes.items() if node.t == t]

@@ -22,6 +22,10 @@ class GeffGraph:
     x: np.ndarray  # (N,)
     edges: np.ndarray  # (E, 2) source -> target node ids
     estimated_number_of_nodes: int | None = None
+    # Optional per-edge learned probability (aligned with `edges`). Written by
+    # the pack-replication pipeline so staged dumps keep the motion-relink
+    # bonus; None when the file carries no edge props (competition GT).
+    edge_prob: np.ndarray | None = None
 
     def centroids_by_t(self) -> dict[int, list[tuple[int, int, int]]]:
         out: dict[int, list[tuple[int, int, int]]] = {}
@@ -291,11 +295,12 @@ def read_geff(geff_path: Path | str) -> GeffGraph:
     try:
         from geff.core_io import read_to_memory
 
+        edge_props = ["edge_prob"] if (geff_path / "edges" / "props" / "edge_prob").exists() else []
         mem = read_to_memory(
             str(geff_path),
             structure_validation=False,
             node_props=["t", "z", "y", "x"],
-            edge_props=[],
+            edge_props=edge_props,
         )
         node_ids = np.asarray(mem["node_ids"])
         props = mem["node_props"]
@@ -307,6 +312,10 @@ def read_geff(geff_path: Path | str) -> GeffGraph:
         if edges.ndim == 1:
             edges = edges.reshape(-1, 2)
         edges = edges.astype(np.int64)
+        edge_prob = None
+        eprops = mem.get("edge_props") or {}
+        if "edge_prob" in eprops:
+            edge_prob = np.asarray(_prop_values(eprops["edge_prob"]), dtype=np.float64)
         return GeffGraph(
             node_ids=node_ids.astype(np.int64),
             t=t,
@@ -315,6 +324,7 @@ def read_geff(geff_path: Path | str) -> GeffGraph:
             x=np.asarray(x),
             edges=edges,
             estimated_number_of_nodes=_estimated_nodes(geff_path, mem.get("metadata")),
+            edge_prob=edge_prob,
         )
     except ImportError:
         pass
@@ -340,6 +350,8 @@ def read_geff(geff_path: Path | str) -> GeffGraph:
             edges = edges.reshape(-1, 2)
     else:
         edges = np.zeros((0, 2), dtype=np.int64)
+    eprob_path = geff_path / "edges" / "props" / "edge_prob" / "values"
+    edge_prob = _load_array(eprob_path).astype(np.float64) if eprob_path.exists() else None
 
     return GeffGraph(
         node_ids=node_ids,
@@ -349,6 +361,7 @@ def read_geff(geff_path: Path | str) -> GeffGraph:
         x=np.asarray(x),
         edges=edges,
         estimated_number_of_nodes=_estimated_nodes(geff_path),
+        edge_prob=edge_prob,
     )
 
 
@@ -369,8 +382,13 @@ def write_geff(
     x: np.ndarray,
     edges: np.ndarray,
     estimated_number_of_nodes: int | None = None,
+    edge_prob: np.ndarray | None = None,
 ) -> Path:
-    """Write a GEFF v1.1 graph (zarr v3 group) mirroring the competition layout."""
+    """Write a GEFF v1.1 graph (zarr v3 group) mirroring the competition layout.
+
+    ``edge_prob`` (aligned with ``edges``; NaN for repaired edges without a
+    learned probability) is written as an edge property when given.
+    """
     import zarr
 
     geff_path = Path(geff_path)
@@ -397,7 +415,14 @@ def write_geff(
 
     edge_grp = root.create_group("edges")
     edge_grp.create_array("ids", shape=edges.shape, dtype="int64")[:] = edges
-    edge_grp.create_group("props")
+    eprops = edge_grp.create_group("props")
+    edge_props_metadata: dict[str, dict] = {}
+    if edge_prob is not None:
+        ep = np.asarray(edge_prob, dtype=np.float64).reshape(-1)
+        if len(ep) != len(edges):
+            raise ValueError(f"edge_prob has {len(ep)} entries for {len(edges)} edges")
+        eprops.create_group("edge_prob").create_array("values", shape=ep.shape, dtype="float64")[:] = ep
+        edge_props_metadata["edge_prob"] = {"identifier": "edge_prob", "dtype": "float64", "varlength": False}
 
     def _axis(name: str, values: np.ndarray, scale: float) -> dict:
         return {
@@ -428,7 +453,7 @@ def write_geff(
             n: {"identifier": n, "dtype": d, "varlength": False}
             for n, d in (("t", "int64"), ("z", "float64"), ("y", "float64"), ("x", "float64"))
         },
-        "edge_props_metadata": {},
+        "edge_props_metadata": edge_props_metadata,
         "extra": extra,
     }
     return geff_path

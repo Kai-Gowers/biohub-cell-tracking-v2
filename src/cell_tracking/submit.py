@@ -1,5 +1,7 @@
 """Convert predicted `.geff` graphs into `submission.csv`.
 
+Coordinates are rounded to integers and clamped at zero (line-fit smoothing can
+push a node fractionally negative), matching the 0.942 notebook's writer.
 Rows stream straight to disk rather than accumulating in a DataFrame, and the
 writer refuses to finish if any expected dataset is missing -- a submission
 silently short one video scores zero on that video's share rather than
@@ -63,9 +65,9 @@ def write_submission(
                         "node",
                         int(graph.node_ids[i]),
                         int(graph.t[i]),
-                        int(round(float(graph.z[i]))),
-                        int(round(float(graph.y[i]))),
-                        int(round(float(graph.x[i]))),
+                        max(0, int(round(float(graph.z[i])))),
+                        max(0, int(round(float(graph.y[i])))),
+                        max(0, int(round(float(graph.x[i])))),
                         FILL,
                         FILL,
                     ]

@@ -1,12 +1,11 @@
-"""Paths and every algorithm hyperparameter.
+"""Paths, geometry, and the split seed.
 
-v2 has grown past its original single-frame/no-edge-model baseline: a
-2-frame windowed 3D U-Net with cross-frame attention, a learned edge scorer
-trained via detect-and-match, augmentation + TTA, and greedy (not exact)
-linking -- see reports/2026-08-25-sample-solution-0.90-comparison.md and
-reports/2026-08-25-four-sample-solution-features.md for why. There is still
-no repair pass and no divisions. Add a constant here, with a comment
-explaining why, only once `reports/` has evidence that it helps.
+Algorithm hyperparameters live with the stage they belong to, as dataclasses
+whose defaults are the 0.942 notebook's committed values:
+``pack_predict.PredictConfig`` (detection / edge scoring / TTA / dual seed),
+``ilp.ILPConfig`` (graph selection), ``postprocess.PostprocessConfig``
+(graph repair), and ``pack_train.TrainConfig`` (the pack's training recipe).
+This module keeps only what every stage shares.
 """
 
 from __future__ import annotations
@@ -28,7 +27,9 @@ DEFAULT_MODEL_DIR = REPO_ROOT / "dist" / "models"
 DEFAULT_CACHE_DIR = REPO_ROOT / "dist" / "cache"
 
 CHECKPOINT_NAME = "detector.pt"          # last epoch, so a run stays resumable
-BEST_CHECKPOINT_NAME = "detector_best.pt"  # best validation epoch -- what inference wants
+BEST_CHECKPOINT_NAME = "detector_best.pt"  # best held-out val_score epoch -- what inference wants
+# The public pack's weight file name; `load_pack_model` accepts either layout.
+PACK_WEIGHTS_NAME = "edge_predictor_best.pth"
 
 # --- Geometry -------------------------------------------------------------
 # d_um = sqrt((1.625 dz)^2 + (0.40625 dy)^2 + (0.40625 dx)^2)
@@ -36,98 +37,10 @@ SCALE = np.array([1.625, 0.40625, 0.40625], dtype=np.float64)  # µm per voxel, 
 
 # Downsampling xy only gives an ISOTROPIC 1.625 µm grid: a uniform 4x
 # downsample would make z voxels 6.5 µm, eating ~49% of the metric's 7 µm
-# match tolerance before the model does anything.
+# match tolerance before the model does anything. The pack decimates
+# (`raw[::1, ::4, ::4]`) rather than mean-pooling; see preprocess.py.
 DOWNSAMPLE = (1, 4, 4)  # (z, y, x) factors applied to the raw volume
 GRID_SPACING = SCALE * np.array(DOWNSAMPLE, dtype=np.float64)  # (1.625,)*3 µm
-
-# --- Detection ------------------------------------------------------------
-TAU = 0.985  # detections are local maxima above this probability
-# NMS radius in grid voxels, applied as a max-pool neighbourhood. A binary
-# training target saturates the sigmoid, so a cell is a REGION at exactly
-# 1.0 -- this also has to break ties, see peaks.py.
-PEAK_NMS_RADIUS_VX = 2
-# Safety cap only. The densest volume seen so far peaks at ~590 detections per
-# frame, so this never binds; it exists to stop a broken checkpoint (TAU
-# meaningless, every voxel a peak) from flooding memory, not to shape results.
-MAX_DETECTIONS_PER_FRAME = 10000
-
-# --- Model ----------------------------------------------------------------
-# 2-frame temporal window with multi-head self-attention across the window at
-# every encoder stage except full-res, reintroduced from the v2 baseline's
-# single-frame default per reports/2026-08-25-sample-solution-0.90-comparison.md
-# item 4 (the 0.90 sample solution attends at every encoder stage; the v1
-# sibling repo only mixed frames at the bottleneck).
-UNET_BASE_CHANNELS = 16
-UNET_DEPTH = 3
-WINDOW_SIZE = 2       # frames per model input; the LAST frame is the prediction target
-ATTN_HEADS = 4        # must evenly divide every encoder stage's channel count
-
-# Dropout in the coarser stages only (not stage 0/full-res, not the finest
-# decoder stage that feeds out_proj and the edge scorer) -- added after a
-# clean, low-noise training run (val_frames_per_volume=16, an actually
-# annealing LR) still showed train loss improving smoothly to epoch 21 while
-# val_loss peaked at epoch 6 and never recovered: a real train/val gap, not
-# a measurement artifact. Full-res dropout risks the sub-voxel localization
-# precision this task depends on, so it stays concentrated where the model
-# is learning more abstract, more overfit-prone representations.
-UNET_DROPOUT = 0.1
-EDGE_DROPOUT = 0.1
-
-# --- Edge model -------------------------------------------------------------
-# A learned edge scorer (report item 1/2), trained via detect-and-match in
-# train.py/edge_train.py: candidate pairs and their positive/negative labels
-# come from the detector's OWN live peaks matched to ground truth, never a
-# synthetic GT-node + nearest-peak-decoy set. Node features are sampled
-# (trilinear) from the decoder's finest feature map, which has
-# UNET_BASE_CHANNELS channels at full grid resolution.
-EDGE_FEATURE_DIM = UNET_BASE_CHANNELS
-EDGE_HIDDEN_DIM = 64
-EDGE_MATCH_RADIUS_UM = 5.0   # GT-match radius for building detect-and-match labels
-EDGE_LOSS_WEIGHT = 1.0
-EDGE_NEG_ALPHA = 0.05        # candidate pairs are mostly non-edges; mirrors CENTER_NEG_ALPHA
-
-# --- Augmentation -----------------------------------------------------------
-# y/x flip + brightness jitter, shared across every frame in a training
-# window (and the target's GT grid) so the sample stays geometrically and
-# photometrically consistent. z is excluded from flipping for the same
-# anisotropy reason TTA excludes it below.
-AUGMENT_FLIP_PROB = 0.5
-AUGMENT_BRIGHTNESS_GAIN = (0.85, 1.15)
-AUGMENT_BRIGHTNESS_BIAS = (-0.05, 0.05)
-
-# --- Test-time augmentation --------------------------------------------------
-# Average detection LOGITS over identity + 3 flips. z is excluded: DOWNSAMPLE
-# already makes z ~4x coarser than y/x, so a z-flip is not the same kind of
-# invariance a y/x flip tests. Each tuple is the `dims` argument to
-# `torch.flip` on a (..., Z, Y, X) tensor.
-TTA_FLIPS: tuple[tuple[int, ...], ...] = ((), (-1,), (-2,), (-2, -1))
-# Optional 8-way variant that also reflects z. The "z is coarser" argument
-# above rules out treating z like y/x for *pooling*, but a reflection is a
-# valid symmetry whatever the spacing (the critique in context/ is right on
-# this point); whether depth-dependent optics make it unhelpful is empirical
-# -- `scripts/predict.py --tta-z`.
-TTA_FLIPS_WITH_Z: tuple[tuple[int, ...], ...] = TTA_FLIPS + tuple((-3,) + f for f in TTA_FLIPS)
-
-# --- Detection loss ---------------------------------------------------------
-# w+(b) = 1/N+(b), w-(b) = alpha/N-(b), alpha = 0.01.
-# Only ~2.8% of real cells are annotated, so the negative pool is mostly
-# unlabelled true cells; alpha is what stops them dominating. Total positive
-# weight is 1.0 vs 0.01 negative -- a deliberate 100:1 bias toward recall, and
-# what makes TAU=0.985 select peaks rather than nothing (a soft target never
-# saturates the sigmoid).
-CENTER_NEG_ALPHA = 0.01
-
-# --- Linking ---------------------------------------------------------------
-# Candidates are still gated to this radius, but selection is now plain
-# greedy score-sorted thresholding, not an exact bipartite assignment --
-# report item 5: even the 0.90 sample solution uses greedy-by-default (its
-# ILP solver ships but is OFF), so this is not where points are being left on
-# the table. In/out-degree is still <= 1 by construction (no divisions).
-LINK_RADIUS_UM = 15.0
-# Score threshold when a learned edge model is available (its sigmoid output
-# is a probability); with no edge model, link.py falls back to negative
-# distance and this threshold is unused.
-LINK_SCORE_THRESHOLD = 0.5
 
 # --- Training -------------------------------------------------------------
 VAL_FRAC = 0.1
@@ -236,10 +149,12 @@ def um_to_voxels(coords_um: np.ndarray, scale: np.ndarray = SCALE) -> np.ndarray
 
 
 def grid_to_voxels(coords_grid: np.ndarray) -> np.ndarray:
-    """Map model-grid (z,y,x) indices back to raw-volume voxel coordinates.
+    """Map model-grid (z,y,x) indices back to raw-volume voxel *centres*.
 
     A grid cell covers `DOWNSAMPLE` raw voxels, so its centre sits at
-    `d * i + (d - 1) / 2`.
+    `d * i + (d - 1) / 2`. NOTE: the ported pack pipeline does NOT use this;
+    it emits `grid * d` (top-left corner of the cell, a ~0.6 µm y/x bias
+    against the 7 µm tolerance) to stay faithful to the public weights.
     """
     d = np.asarray(DOWNSAMPLE, dtype=np.float64)
     return np.asarray(coords_grid, dtype=np.float64) * d + (d - 1.0) / 2.0
