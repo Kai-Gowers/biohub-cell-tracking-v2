@@ -84,8 +84,21 @@ def list_geff_datasets(train_dir: Path | str) -> list[str]:
     )
 
 
+def embryo_of(name: str) -> str:
+    """The embryo id: the first `_`-separated token of a dataset name.
+
+    Kaggle's data page: "Folder names follow the pattern
+    {embryo_id}_{field_of_view} ... Train and test sets are embryo-disjoint --
+    no embryo appears in both." The 199 training crops come from just two
+    embryos (`44b6`: 71 crops, `6bba`: 128 crops), and every checkpoint scored
+    so far does ~0.2 worse on `44b6` than on `6bba`, so per-embryo reporting
+    and whole-embryo hold-outs are how the hidden test is previewed locally.
+    """
+    return name.split("_", 1)[0]
+
+
 def split_dataset_names(
-    names: list[str], *, val_frac: float, seed: int
+    names: list[str], *, val_frac: float, seed: int, val_prefix: str | None = None
 ) -> tuple[list[str], list[str]]:
     """Deterministically split volume names into (train, val) by whole volume.
 
@@ -94,7 +107,20 @@ def split_dataset_names(
     train/val boundary, and keeps the split reproducible across runs/epochs
     (same seed -> same split) independent of the global `random` module
     state used elsewhere for time/patch sampling.
+
+    `val_prefix` (e.g. `"44b6"`) holds out EVERY crop of that embryo and
+    trains on the rest -- a cross-embryo split matching the competition's
+    embryo-disjoint hidden test. `val_frac`/`seed` are ignored in that mode.
+    With `val_prefix=None` the split is byte-identical to before, so every
+    historical checkpoint's `val_names` still resolves.
     """
+    if val_prefix is not None:
+        val_names = sorted(n for n in names if embryo_of(n) == val_prefix)
+        train_names = sorted(n for n in names if embryo_of(n) != val_prefix)
+        if not val_names or not train_names:
+            known = sorted({embryo_of(n) for n in names})
+            raise ValueError(f"val_prefix={val_prefix!r} leaves an empty split; embryos present: {known}")
+        return train_names, val_names
     ordered = sorted(names)
     shuffled = ordered[:]
     random.Random(seed).shuffle(shuffled)

@@ -31,6 +31,7 @@ from cell_tracking.config import (
     voxels_to_um,
 )
 from cell_tracking.edge_train import sample_edge_pair
+from cell_tracking.evaluate import score_volume_graphs, summarize, summarize_by_embryo, track_graph_to_geff
 from cell_tracking.io_geff import list_geff_datasets, read_geff, split_dataset_names
 from cell_tracking.losses import detection_loss, edge_loss
 from cell_tracking.models.detector import UNet3D
@@ -59,6 +60,7 @@ class VolumeSampler:
         self.name = name
         self.frames = VolumeFrames(train_dir / f"{name}.zarr", cache_path(cache_dir, name))
         graph = read_geff(train_dir / f"{name}.geff")
+        self.graph = graph  # kept for eval_tracking (metric needs the sparse GT graph itself)
 
         coords: dict[int, list[tuple[float, float, float]]] = {}
         for i in range(len(graph.node_ids)):
@@ -250,6 +252,8 @@ def train(
     edge_loss_weight: float = EDGE_LOSS_WEIGHT,
     edge_every: int = 1,
     save_every: int | None = None,
+    val_prefix: str | None = None,
+    eval_tracking_every: int = 5,
 ) -> Path:
     """Train to `out_path`, checkpointing every epoch.
 
@@ -259,6 +263,12 @@ def train(
     GPU-hours to exactly this distinction going unenforced.
 
     `patience` stops after that many epochs with no `select_by` improvement.
+    `select_by` may be `val_loss` (lower is better) or `val_score` -- the
+    competition metric on the full held-out volumes, computed every
+    `eval_tracking_every` epochs by running the real inference path
+    (`predict_volume`, no TTA) and `evaluate.score_volume_graphs`; higher is
+    better, and epochs without a fresh value neither select nor count toward
+    patience. `val_frames_per_volume <= 0` validates on every frame.
     `max_hours` + `started_at` (a `time.time()` from the *start of the
     session*, before any cache build) stop cleanly after the last epoch that
     fits a Kaggle session, rather than losing a killed epoch's work.
@@ -313,8 +323,11 @@ def train(
     history = history if history is not None else History()
 
     all_names = names or list_geff_datasets(train_dir)
-    train_names, val_names = split_dataset_names(all_names, val_frac=val_frac, seed=val_seed)
-    print(f"device={device}  volumes: {len(train_names)} train / {len(val_names)} val")
+    train_names, val_names = split_dataset_names(
+        all_names, val_frac=val_frac, seed=val_seed, val_prefix=val_prefix
+    )
+    held = f" (embryo {val_prefix} held out)" if val_prefix else ""
+    print(f"device={device}  volumes: {len(train_names)} train / {len(val_names)} val{held}")
 
     # `seed` used to drive only the frame sampler; model init was left to
     # torch's global RNG, so two runs with identical flags got different
@@ -345,8 +358,13 @@ def train(
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
     start_epoch = 0
     best_path = out_path.with_name(f"{out_path.stem}_best{out_path.suffix}")
-    best_value = float("inf")
+    # `val_loss`-style metrics are minimised; anything else (`val_score`) is maximised.
+    minimise = select_by.endswith("loss")
+    best_value = float("inf") if minimise else float("-inf")
     best_epoch = 0
+
+    def improved(current: float) -> bool:
+        return current < best_value if minimise else current > best_value
 
     if resume and out_path.exists():
         ckpt = torch.load(out_path, map_location=device, weights_only=False)
@@ -363,9 +381,9 @@ def train(
         start_epoch = int(ckpt.get("epoch", 0))
         history.entries = list(ckpt.get("history", []))
         print(f"resumed from {out_path} at epoch {start_epoch}")
-        best_value = min(
-            (e[select_by] for e in history.entries if select_by in e), default=float("inf")
-        )
+        seen = [e[select_by] for e in history.entries if e.get(select_by) is not None]
+        if seen:
+            best_value = min(seen) if minimise else max(seen)
         best_epoch = next(
             (e["epoch"] for e in history.entries if e.get(select_by) == best_value), 0
         )
@@ -391,6 +409,8 @@ def train(
             starts = s.starts
             if training:
                 picked = rng.sample(starts, min(per_volume, len(starts)))
+            elif per_volume <= 0:
+                picked = list(starts)  # every frame
             else:
                 step = max(1, len(starts) // per_volume)
                 picked = starts[::step][:per_volume]
@@ -527,6 +547,33 @@ def train(
             "frames": len(work),
         } | diag
 
+    def eval_tracking() -> dict:
+        """Competition metric on every held-out volume, through the real inference path.
+
+        No TTA (4x cheaper; same-checkpoint comparisons are what selection
+        needs). Per-embryo subtotals are logged too, because the hidden test
+        is embryo-disjoint and the two training embryos score ~0.2 apart.
+        """
+        from cell_tracking.predict import predict_volume  # local import: predict imports detect, keep train light
+
+        t_eval = time.time()
+        model.eval()
+        if edge_scorer is not None:
+            edge_scorer.eval()
+        rows = []
+        for n in val_names:
+            s_ = samplers[n]
+            graph, _ = predict_volume(
+                model, device, train_dir / f"{n}.zarr", cache_dir=cache_dir, edge_scorer=edge_scorer, tta=False
+            )
+            rows.append(score_volume_graphs(n, s_.graph, track_graph_to_geff(graph, n)))
+        total = summarize(rows)
+        out = {"val_score": total["score"], "val_det_recall": total["det_recall"], "val_node_ratio": total["node_ratio"]}
+        for emb, summ in summarize_by_embryo(rows).items():
+            out[f"val_score_{emb}"] = summ["score"]
+        out["val_score_seconds"] = time.time() - t_eval
+        return out
+
     run_started = started_at if started_at is not None else time.time()
     if started_at is not None and max_hours is not None:
         setup = (time.time() - started_at) / 3600
@@ -564,14 +611,21 @@ def train(
                 print("Stopping: no epoch improved yet, so there is no _best checkpoint to fall back to.")
             break
         va = run_epoch(epoch, val_names, val_frames_per_volume, False)
+        tracking: dict = {}
+        if eval_tracking_every and ((epoch + 1) % eval_tracking_every == 0 or epoch + 1 == epochs):
+            tracking = eval_tracking()
         sched.step()
         elapsed = time.time() - t0
         edge_msg = ""
         if "edge_loss" in tr:
             edge_msg = f"  edge_loss={tr['edge_loss']:.4f} edge_acc={tr.get('edge_acc', float('nan')):.3f}"
+        score_msg = ""
+        if tracking:
+            per_emb = "  ".join(f"{k}={v:.4f}" for k, v in tracking.items() if k.startswith("val_score_"))
+            score_msg = f"  val_score={tracking['val_score']:.4f} ({per_emb}; {tracking['val_score_seconds']:.0f}s)"
         print(
             f"epoch {epoch + 1}/{epochs}  loss={tr['loss']:.4f}  val_loss={va['loss']:.4f}  "
-            f"steps={tr['steps']}  {elapsed / 60:.1f} min{edge_msg}"
+            f"steps={tr['steps']}  {elapsed / 60:.1f} min{edge_msg}{score_msg}"
         )
         conv_norm = _param_norm(model.encoders, model.decoders, model.bottleneck, model.out_proj)
         attn_norm = _param_norm(model.temporal_attn, model.bottleneck_attn)
@@ -604,6 +658,7 @@ def train(
             weight_norm_edge=edge_norm,
             **{k: v for k, v in tr.items() if k.startswith("edge_")},
             **{f"val_{k}": v for k, v in va.items() if k.startswith("edge_")},
+            **tracking,
         )
         payload = {
             "state_dict": model.state_dict(),
@@ -614,6 +669,9 @@ def train(
             "config": {},
             "history": history.entries,
             "val_names": val_names,
+            # Whole-embryo hold-out id (None for the historical random split);
+            # score_local.py reads it to label the held-out embryo.
+            "val_prefix": val_prefix,
         }
         torch.save(payload, out_path)
         if save_every and (epoch + 1) % save_every == 0:
@@ -623,8 +681,10 @@ def train(
             # nor last alone is a trustworthy summary of a 300-epoch run.
             torch.save(payload, out_path.with_name(f"{out_path.stem}_epoch{epoch + 1}{out_path.suffix}"))
 
-        current = history.entries[-1][select_by]
-        if current < best_value:
+        current = history.entries[-1].get(select_by)
+        if current is None:
+            pass  # no fresh value this epoch (val_score is periodic): neither select nor age patience
+        elif improved(current):
             best_value, best_epoch = current, epoch + 1
             torch.save(payload | {"selected_by": select_by}, best_path)
             print(f"  new best {select_by}={best_value:.5f} -> {best_path.name}")

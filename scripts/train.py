@@ -24,12 +24,22 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--frames-per-volume", type=int, default=20)
-    parser.add_argument("--val-frames-per-volume", type=int, default=4)
+    parser.add_argument(
+        "--val-frames-per-volume", type=int, default=-1, help="Frames per held-out volume for val_loss; <=0 = all."
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=2)
     parser.add_argument("--max-hours", type=float, default=None)
     parser.add_argument("--limit-volumes", type=int, default=None, help="Smoke mode: first N volumes only.")
-    parser.add_argument("--select-by", default="val_loss", help="Metric the `_best` checkpoint tracks.")
+    parser.add_argument(
+        "--select-by",
+        default="val_score",
+        help="Metric the `_best` checkpoint tracks: val_score (competition metric, higher is better; "
+        "computed every --eval-tracking-every epochs) or val_loss (detection only, lower is better).",
+    )
+    parser.add_argument(
+        "--eval-tracking-every", type=int, default=5, help="Epoch interval for the full held-out tracking score (0 = off)."
+    )
     parser.add_argument("--patience", type=int, default=None, help="Stop after N epochs with no --select-by gain.")
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--history-json", type=Path, default=None)
@@ -40,6 +50,11 @@ def main() -> int:
         "--edge-every", type=int, default=1, help="Train the edge scorer every Nth step."
     )
     parser.add_argument("--seed", type=int, default=0, help="Seeds model init and the frame sampler.")
+    parser.add_argument(
+        "--val-embryo",
+        default=None,
+        help="Hold out every crop of this embryo id (name prefix, e.g. 44b6) instead of a random 10%%.",
+    )
     parser.add_argument(
         "--save-every", type=int, default=None, help="Also keep a `<out>_epoch{N}.pt` snapshot every N epochs."
     )
@@ -76,6 +91,8 @@ def main() -> int:
         edge_every=args.edge_every,
         seed=args.seed,
         save_every=args.save_every,
+        val_prefix=args.val_embryo,
+        eval_tracking_every=args.eval_tracking_every,
     )
     if args.history_json:
         history.to_json(args.history_json)

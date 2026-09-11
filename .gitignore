@@ -37,3 +37,8 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# Reference Kaggle artifacts for the 0.942 replication (weights + wheels, ~750MB); see CLAUDE.md
+context/pack_primary/
+context/pack_secondary/
+context/pack_deepcenter/

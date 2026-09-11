@@ -6,7 +6,8 @@ fatal, and zero detections get reported rather than papered over.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -33,8 +34,12 @@ class FrameDetections:
     t: int
     grid: np.ndarray  # (N, 3) int, model-grid coordinates -- the INDEX
     zyx: np.ndarray  # (N, 3) float, raw-volume voxel coordinates, sub-voxel refined
-    score: np.ndarray  # (N,)
+    score: np.ndarray  # (N,) sigmoid at the peak -- saturated near 1.0, carries little information
     max_prob: float  # frame-wide max probability, for TAU calibration checks
+    # Pre-sigmoid logit at the peak voxel. Unlike `score` it is not saturated,
+    # so it is the usable per-detection confidence (edge-model token feature,
+    # candidate dumps for analysis). Empty for callers that pass no logits.
+    logit: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
 
     @property
     def um(self) -> np.ndarray:
@@ -89,28 +94,45 @@ def load_model(
 
 
 def predict_logits_tta(
-    model: UNet3D, window: np.ndarray, device: torch.device, *, tta: bool = True
+    model: UNet3D | Sequence[UNet3D],
+    window: np.ndarray,
+    device: torch.device,
+    *,
+    tta: bool = True,
+    flips: tuple[tuple[int, ...], ...] = TTA_FLIPS,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run the detector on one `(T, Z, Y, X)` window, averaging LOGITS over TTA flips.
+    """Run the detector(s) on one `(T, Z, Y, X)` window, averaging LOGITS over TTA flips.
 
     Returns `(logits, features)` for a single frame, both `(Z, Y, X)` /
-    `(C, Z, Y, X)`. `features` always comes from the identity orientation --
-    TTA is purely a detection-quality trick (report item 3); re-deriving node
-    features per flip would need un-flipping the feature map too for no
-    benefit the edge model needs.
+    `(C, Z, Y, X)`. `features` always comes from the identity orientation of
+    the FIRST model -- TTA is purely a detection-quality trick (report item 3);
+    re-deriving node features per flip would need un-flipping the feature map
+    too for no benefit the edge model needs.
+
+    `model` may be a sequence of detectors: their logits are averaged too (a
+    seed/fold ensemble). Identical-config runs differ by ~0.05 held-out from
+    init alone, so averaging several is the cheapest variance reduction there
+    is. The edge scorer, if any, stays the first model's.
+
+    `flips` defaults to `TTA_FLIPS` (identity + y/x flips); pass
+    `TTA_FLIPS_WITH_Z` to also reflect z -- a reflection is a valid symmetry
+    regardless of the axis' spacing, so whether z-flips help is empirical.
     """
+    models = [model] if isinstance(model, torch.nn.Module) else list(model)
     x = torch.from_numpy(window).unsqueeze(0).to(device)  # (1, T, Z, Y, X)
-    with torch.no_grad():
-        logits0, feats0 = model(x, return_features=True)
-    acc = logits0[0, 0].clone()
-    if tta:
-        for flip_dims in TTA_FLIPS[1:]:
-            xf = torch.flip(x, dims=list(flip_dims))
+    use = flips if tta else flips[:1]
+    acc = None
+    feats0 = None
+    for m in models:
+        for flip_dims in use:
+            xf = torch.flip(x, dims=list(flip_dims)) if flip_dims else x
             with torch.no_grad():
-                lf, _ = model(xf, return_features=True)
-            acc = acc + torch.flip(lf[0, 0], dims=list(flip_dims))
-        acc = acc / len(TTA_FLIPS)
-    return acc, feats0[0]
+                lf, ff = m(xf, return_features=True)
+            lf = torch.flip(lf[0, 0], dims=list(flip_dims)) if flip_dims else lf[0, 0]
+            acc = lf.clone() if acc is None else acc + lf
+            if feats0 is None:
+                feats0 = ff[0]
+    return acc / (len(models) * len(use)), feats0
 
 
 def extract_detections(
@@ -147,6 +169,11 @@ def extract_detections(
     if not len(grid):
         empty = np.zeros((0, 3), dtype=np.float64)
         return FrameDetections(t=t, grid=grid, zyx=empty, score=np.zeros(0), max_prob=float(prob.max()))
+    peak_logit = (
+        logits[idx[:, 0], idx[:, 1], idx[:, 2]].detach().cpu().numpy().astype(np.float64)
+        if logits is not None
+        else np.zeros(len(grid), dtype=np.float64)
+    )
 
     if subvoxel:
         offset = subvoxel_offset(logits, idx).detach().cpu().numpy().astype(np.float64)
@@ -164,6 +191,7 @@ def extract_detections(
         zyx=zyx,
         score=score.detach().cpu().numpy().astype(np.float64),
         max_prob=float(prob.max()),
+        logit=peak_logit,
     )
 
 

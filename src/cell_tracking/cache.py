@@ -29,15 +29,25 @@ def build_volume_cache(
     out_path: Path | str,
     *,
     overwrite: bool = False,
+    dtype: str = "uint8",
 ) -> Path:
-    """Prepare every frame of one volume and write it as a single uint8 array."""
+    """Prepare every frame of one volume and write it as one array.
+
+    `dtype="uint8"` quantises the [0, 1] frame to 256 levels (the original
+    5 GB cache, a Kaggle-era disk/RAM trade-off); `"float16"` keeps ~3
+    significant digits at twice the size and removes the question of whether
+    dim nuclei lose detail to quantisation. `VolumeFrames` reads either.
+    """
+    if dtype not in ("uint8", "float16"):
+        raise ValueError(f"dtype must be 'uint8' or 'float16', got {dtype!r}")
+    to_store = to_uint8 if dtype == "uint8" else (lambda f: f.astype(np.float16))
     zarr_path, out_path = Path(zarr_path), Path(out_path)
     if out_path.exists() and not overwrite:
         return out_path
 
-    shape, dtype = read_array_meta(zarr_path)
+    shape, dtype_raw = read_array_meta(zarr_path)
     n_t = int(shape[0])
-    first = prepare_frame(read_volume(zarr_path, 0, shape, dtype))
+    first = prepare_frame(read_volume(zarr_path, 0, shape, dtype_raw))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(".npy.tmp")
@@ -45,11 +55,11 @@ def build_volume_cache(
     # file so an interrupted build can't leave a half-written cache that later
     # reads would silently accept.
     arr = np.lib.format.open_memmap(
-        tmp, mode="w+", dtype=np.uint8, shape=(n_t, *first.shape)
+        tmp, mode="w+", dtype=np.dtype(dtype), shape=(n_t, *first.shape)
     )
-    arr[0] = to_uint8(first)
+    arr[0] = to_store(first)
     for t in range(1, n_t):
-        arr[t] = to_uint8(prepare_frame(read_volume(zarr_path, t, shape, dtype)))
+        arr[t] = to_store(prepare_frame(read_volume(zarr_path, t, shape, dtype_raw)))
     arr.flush()
     del arr
     tmp.replace(out_path)
@@ -85,7 +95,9 @@ class VolumeFrames:
     def frame(self, t: int) -> np.ndarray:
         """Prepared float32 frame at timepoint `t`."""
         if self._cached is not None:
-            return from_uint8(np.asarray(self._cached[t]))
+            if self._cached.dtype == np.uint8:
+                return from_uint8(np.asarray(self._cached[t]))
+            return np.asarray(self._cached[t], dtype=np.float32)
         return prepare_frame(read_volume(self.zarr_path, t, self._raw_shape, self._dtype))
 
     def window(self, t0: int, size: int) -> np.ndarray:

@@ -18,6 +18,7 @@ from cell_tracking.config import (
     LINK_SCORE_THRESHOLD,
     MAX_DETECTIONS_PER_FRAME,
     TAU,
+    TTA_FLIPS,
     WINDOW_SIZE,
     get_cache_dir,
     voxels_to_grid,
@@ -32,7 +33,7 @@ from cell_tracking.peaks import pair_within_radius
 
 
 def predict_volume(
-    model: UNet3D,
+    model: UNet3D | list[UNet3D],
     device: torch.device,
     zarr_path: Path | str,
     *,
@@ -45,6 +46,8 @@ def predict_volume(
     tta: bool = True,
     link_radius_um: float = LINK_RADIUS_UM,
     link_score_threshold: float = LINK_SCORE_THRESHOLD,
+    tta_flips: tuple[tuple[int, ...], ...] = TTA_FLIPS,
+    dump_candidates: Path | None = None,
 ) -> tuple[TrackGraph, dict]:
     """Track one volume end to end: per-frame detection, then frame-pair linking.
 
@@ -52,7 +55,14 @@ def predict_volume(
     `link.link_frames` uses those probabilities (thresholded at
     `link_score_threshold`) instead of falling back to negative distance.
     `tta` averages detection logits over identity + 3 flips (see
-    `detect.predict_logits_tta`); it has no effect on edge scoring.
+    `detect.predict_logits_tta`); it has no effect on edge scoring. `model`
+    may be a list of detectors to ensemble (logits averaged).
+
+    `dump_candidates` writes `<dir>/<name>.npz` with, per frame pair `t`, the
+    distance-gated candidate `pairs`, their `scores` BEFORE the link
+    threshold, and the `selected` pairs, plus per-frame node ids and peak
+    logits -- what `scripts/analyze_errors.py` needs for true-partner rank and
+    greedy-vs-exact regret, which the `.geff` output cannot carry.
     """
     zarr_path = Path(zarr_path)
     name = zarr_path.stem
@@ -65,7 +75,7 @@ def predict_volume(
     node_feats: dict[int, torch.Tensor] = {}
     for t in range(n_t):
         window = frames.window(t - (WINDOW_SIZE - 1), WINDOW_SIZE)
-        logits, feats = predict_logits_tta(model, window, device, tta=tta)
+        logits, feats = predict_logits_tta(model, window, device, tta=tta, flips=tta_flips)
         prob = torch.sigmoid(logits)
         det = extract_detections(
             prob, t, logits=logits, tau=tau, max_per_frame=max_per_frame, subvoxel=subvoxel
@@ -88,19 +98,20 @@ def predict_volume(
             dtype=np.int64,
         )
 
+    dump: dict[str, np.ndarray] = {}
     for t in range(n_t - 1):
         src, dst = detections[t], detections[t + 1]
         pairs = None
         edge_scores = None
-        if edge_scorer is not None and len(src) and len(dst):
+        if len(src) and len(dst):
             pairs = pair_within_radius(src.um, dst.um, link_radius_um)
-            if len(pairs):
-                fs = node_feats[t][pairs[:, 0]]
-                fd = node_feats[t + 1][pairs[:, 1]]
-                rel_um = torch.from_numpy(dst.um[pairs[:, 1]] - src.um[pairs[:, 0]]).float().to(device)
-                with torch.no_grad():
-                    edge_logits = edge_scorer(fs, fd, rel_um)
-                edge_scores = torch.sigmoid(edge_logits).detach().cpu().numpy()
+        if edge_scorer is not None and pairs is not None and len(pairs):
+            fs = node_feats[t][pairs[:, 0]]
+            fd = node_feats[t + 1][pairs[:, 1]]
+            rel_um = torch.from_numpy(dst.um[pairs[:, 1]] - src.um[pairs[:, 0]]).float().to(device)
+            with torch.no_grad():
+                edge_logits = edge_scorer(fs, fd, rel_um)
+            edge_scores = torch.sigmoid(edge_logits).detach().cpu().numpy()
         selected = link_frames(
             src.um,
             dst.um,
@@ -111,8 +122,30 @@ def predict_volume(
         )
         for a, b in selected:
             graph.add_edge(int(node_ids[t][a]), int(node_ids[t + 1][b]))
+        if dump_candidates is not None:
+            if pairs is None:
+                pairs = np.zeros((0, 2), dtype=np.int64)
+            if edge_scores is None:
+                # Distance fallback: the same ordering key link_frames used.
+                edge_scores = (
+                    -np.linalg.norm(src.um[pairs[:, 0]] - dst.um[pairs[:, 1]], axis=-1)
+                    if len(pairs)
+                    else np.zeros(0)
+                )
+            dump[f"{t}:pairs"] = pairs.astype(np.int64)
+            dump[f"{t}:scores"] = np.asarray(edge_scores, dtype=np.float32)
+            dump[f"{t}:selected"] = np.asarray(selected, dtype=np.int64).reshape(-1, 2)
 
     graph.validate()
+
+    if dump_candidates is not None:
+        for t in range(n_t):
+            dump[f"{t}:node_ids"] = node_ids[t]
+            dump[f"{t}:logit"] = np.asarray(detections[t].logit, dtype=np.float32)
+        dump["n_t"] = np.array(n_t)
+        dump["scored_by_edge_model"] = np.array(edge_scorer is not None)
+        Path(dump_candidates).mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(Path(dump_candidates) / f"{name}.npz", **dump)
 
     stats = {
         "name": name,

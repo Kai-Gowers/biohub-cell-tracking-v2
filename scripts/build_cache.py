@@ -27,6 +27,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None, help="Only the first N volumes.")
     parser.add_argument("--volume", action="append", dest="volumes", default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--dtype", choices=("uint8", "float16"), default="uint8", help="Storage dtype (see cache.py).")
     args = parser.parse_args()
 
     src_dir = args.dir or get_train_dir()
@@ -45,7 +46,7 @@ def main() -> int:
     for i, name in enumerate(names, 1):
         out = cache_path(cache_dir, name)
         t0 = time.time()
-        build_volume_cache(Path(src_dir) / f"{name}.zarr", out, overwrite=args.overwrite)
+        build_volume_cache(Path(src_dir) / f"{name}.zarr", out, overwrite=args.overwrite, dtype=args.dtype)
         total_bytes += out.stat().st_size
         print(f"[{i}/{len(names)}] {name}  {time.time() - t0:5.1f}s  {out.stat().st_size / 1e6:6.1f} MB")
 

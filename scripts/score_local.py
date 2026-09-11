@@ -21,15 +21,9 @@ from pathlib import Path
 import torch
 
 from cell_tracking.config import get_train_dir
-from cell_tracking.io_geff import read_geff
-from cell_tracking.metric import (
-    DIVISION_WEIGHT,
-    adjusted_jaccard,
-    detection_recall,
-    match_nodes_per_frame,
-    score_divisions,
-    score_edges,
-)
+from cell_tracking.evaluate import score_volume_graphs, summarize
+from cell_tracking.io_geff import embryo_of, read_geff
+from cell_tracking.metric import DIVISION_WEIGHT
 
 COMPETITION_VOLUMES = [
     "44b6_0113de3b",
@@ -42,45 +36,11 @@ COMPETITION_VOLUMES = [
 def score_volume(name: str, train_dir: Path, geff_dir: Path) -> dict:
     gt = read_geff(train_dir / f"{name}.geff")
     pred = read_geff(geff_dir / f"{name}.geff")
-
-    gt_edges = {(int(u), int(v)) for u, v in gt.edges}
-    pred_edges = [(int(u), int(v)) for u, v in pred.edges]
-    pred_to_gt = match_nodes_per_frame(gt.nodes_by_t(), pred.nodes_by_t())
-
-    edge = score_edges(gt_edges, pred_edges, pred_to_gt)
-    div = score_divisions(gt_edges, pred_edges, pred_to_gt)
-    rec = detection_recall(gt.nodes_by_t(), pred.nodes_by_t())
-
-    n_pred = len(pred.node_ids)
-    t_true = gt.estimated_number_of_nodes
-    return {
-        "name": name,
-        "n_gt_nodes": len(gt.node_ids),
-        "n_pred_nodes": n_pred,
-        "t_true": t_true,
-        "node_ratio": (n_pred / t_true) if t_true else float("nan"),
-        "n_gt_edges": len(gt_edges),
-        "n_pred_edges": len(pred_edges),
-        "matched_nodes": len(pred_to_gt),
-        "tp": edge.tp,
-        "fp": edge.fp,
-        "fn": edge.fn,
-        "ignored": edge.ignored,
-        "weight": edge.weight,
-        "edge_jaccard": edge.jaccard,
-        "adjusted_edge_jaccard": adjusted_jaccard(edge.jaccard, n_pred, t_true),
-        "n_gt_divisions": len(gt.divisions()),
-        "pred_forks": div.candidates,
-        "div_tp": div.tp,
-        "div_fp": div.fp,
-        "div_fn": div.fn,
-        "det_recall": rec["recall"],
-        "det_median_um": rec["median_um"],
-        "det_within_7um": rec["within_7um"],
-    }
+    return score_volume_graphs(name, gt, pred)
 
 
-def held_out_names(checkpoint: Path) -> list[str]:
+def held_out_names(checkpoint: Path) -> tuple[list[str], str | None]:
+    """`(val_names, val_prefix)` from a checkpoint; `val_prefix` is the held-out embryo or None."""
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
     names = ckpt.get("val_names")
     if not names:
@@ -88,7 +48,7 @@ def held_out_names(checkpoint: Path) -> list[str]:
             f"{checkpoint} has no 'val_names'; it predates held-out tracking or was "
             "trained on every volume."
         )
-    return list(names)
+    return list(names), ckpt.get("val_prefix")
 
 
 def main() -> int:
@@ -110,7 +70,10 @@ def main() -> int:
     if args.volumes:
         names, label = args.volumes, "requested"
     elif args.held_out:
-        names, label = held_out_names(args.held_out), "HELD OUT (never trained on)"
+        names, val_prefix = held_out_names(args.held_out)
+        label = "HELD OUT (never trained on)"
+        if val_prefix:
+            label += f" -- whole embryo {val_prefix}"
     elif args.competition:
         names, label = COMPETITION_VOLUMES, "COMPETITION volumes (trained on -- optimistic)"
     else:
@@ -142,6 +105,23 @@ def main() -> int:
     tot_hit = sum(r["det_within_7um"] for r in results)
     print(f"{'OVERALL':16s} within 7um: {tot_hit:5d}/{tot_gt:5d} ({100*tot_hit/max(tot_gt,1):5.1f}%)")
     print("  This number is comparable across checkpoints; the score below is not.")
+
+    # Per-embryo subtotals. The hidden test is embryo-disjoint and the training
+    # data has two embryos that score very differently, so the total alone hides
+    # the number that predicts generalization.
+    by_embryo: dict[str, list[dict]] = {}
+    for r in results:
+        by_embryo.setdefault(embryo_of(r["name"]), []).append(r)
+    print(f"\n=== per-embryo ({label}) ===")
+    for emb, rs in sorted(by_embryo.items()):
+        s = summarize(rs)
+        print(
+            f"{emb:6s} n={s['n']:3d}  SCORE={s['score']:.4f}  adj={s['adj']:.4f}  "
+            f"det_recall={100*s['det_recall']:5.1f}%  node_ratio={s['node_ratio']:.3f}  "
+            f"TP={s['tp']} FP={s['fp']} FN={s['fn']}  weight={s['weight']}"
+        )
+    if len(by_embryo) > 1:
+        print("  The total below is weighted by annotation count, which favours the more-annotated embryo.")
 
     total_w = sum(r["weight"] for r in results)
     adj = (

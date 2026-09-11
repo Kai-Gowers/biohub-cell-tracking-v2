@@ -46,7 +46,10 @@ TAU = 0.985  # detections are local maxima above this probability
 # training target saturates the sigmoid, so a cell is a REGION at exactly
 # 1.0 -- this also has to break ties, see peaks.py.
 PEAK_NMS_RADIUS_VX = 2
-MAX_DETECTIONS_PER_FRAME = 1500
+# Safety cap only. The densest volume seen so far peaks at ~590 detections per
+# frame, so this never binds; it exists to stop a broken checkpoint (TAU
+# meaningless, every voxel a peak) from flooding memory, not to shape results.
+MAX_DETECTIONS_PER_FRAME = 10000
 
 # --- Model ----------------------------------------------------------------
 # 2-frame temporal window with multi-head self-attention across the window at
@@ -98,6 +101,12 @@ AUGMENT_BRIGHTNESS_BIAS = (-0.05, 0.05)
 # invariance a y/x flip tests. Each tuple is the `dims` argument to
 # `torch.flip` on a (..., Z, Y, X) tensor.
 TTA_FLIPS: tuple[tuple[int, ...], ...] = ((), (-1,), (-2,), (-2, -1))
+# Optional 8-way variant that also reflects z. The "z is coarser" argument
+# above rules out treating z like y/x for *pooling*, but a reflection is a
+# valid symmetry whatever the spacing (the critique in context/ is right on
+# this point); whether depth-dependent optics make it unhelpful is empirical
+# -- `scripts/predict.py --tta-z`.
+TTA_FLIPS_WITH_Z: tuple[tuple[int, ...], ...] = TTA_FLIPS + tuple((-3,) + f for f in TTA_FLIPS)
 
 # --- Detection loss ---------------------------------------------------------
 # w+(b) = 1/N+(b), w-(b) = alpha/N-(b), alpha = 0.01.
