@@ -136,7 +136,10 @@ def decompose_volume(
     out.n_gt_nodes, out.n_gt_detected, out.n_gt_edges = len(gt.node_ids), len(pred_to_gt), len(gt_edges)
     out.tp, out.fp = ref.tp, ref.fp
 
-    pred_out = {u: v for u, v in pred_edges}
+    pred_out = {u: v for u, v in pred_edges}          # any one child (membership tests)
+    pred_children: dict[int, set[int]] = {}           # all children: predicted graphs may fork
+    for u, v in pred_edges:
+        pred_children.setdefault(u, set()).add(v)
     pred_in = {v: u for u, v in pred_edges}
     gt_children: dict[int, list[int]] = {}
     for u, v in gt_edges:
@@ -185,7 +188,7 @@ def decompose_volume(
         is_div_child = len(gt_children[u]) >= 2
         bin_key = crowding_bin(nn_um.get(pu, float("inf"))) if pu is not None else "undetected-src"
         bump(bin_key, "gt_edges")
-        if pu is not None and pv is not None and pred_out.get(pu) == pv:
+        if pu is not None and pv is not None and pv in pred_children.get(pu, ()):
             bump(bin_key, "tp")
             if not is_div_child:
                 out.assoc_edges += 1

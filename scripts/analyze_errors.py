@@ -82,13 +82,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--geff-dir", type=Path, required=True)
     parser.add_argument("--train-dir", type=Path, default=None)
-    parser.add_argument("--held-out", type=Path, required=True, help="Checkpoint whose val_names to analyze.")
+    parser.add_argument("--held-out", type=Path, default=None, help="Checkpoint whose val_names to analyze.")
+    parser.add_argument("--split", type=Path, default=None, help="JSON {'datasets': [...]} naming the volumes instead.")
     parser.add_argument("--candidates", type=Path, default=None, help="Dir of <name>.npz candidate dumps.")
     parser.add_argument("--json-out", type=Path, default=None)
     args = parser.parse_args()
 
     train_dir = args.train_dir or get_train_dir()
-    names, val_prefix = held_out_names(args.held_out)
+    if args.split:
+        names, val_prefix = json.loads(args.split.read_text())["datasets"], None
+    elif args.held_out:
+        names, val_prefix = held_out_names(args.held_out)
+    else:
+        raise SystemExit("pass --held-out <checkpoint> or --split <json>")
     names = [n for n in names if (args.geff_dir / f"{n}.geff").exists()]
     cand_dir = args.candidates
     if cand_dir is None and (args.geff_dir / "candidates").exists():
@@ -103,7 +109,7 @@ def main() -> int:
         for emb, rs in sorted(by_embryo.items()):
             print_block(f"embryo {emb}", aggregate(rs))
     if cand_dir is None:
-        print("\n(no candidate dump found: rank and regret not computed; re-predict with --dump-candidates)")
+        print("\n(no candidate dump: rank and regret not computed; the pack pipeline does not emit one)")
     if args.json_out:
         args.json_out.write_text(
             json.dumps({"volumes": [r.to_dict() for r in results], "all": aggregate(results)}, indent=1)
