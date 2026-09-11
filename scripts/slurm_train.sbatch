@@ -19,7 +19,13 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# NOT `$(dirname "${BASH_SOURCE[0]}")/..` -- sbatch copies the submitted
+# script to a spool directory on the allocated compute node before running
+# it (e.g. /var/spool/slurmd/...), so BASH_SOURCE does not point back at the
+# repo under `sbatch`, even though it does under `srun` (which runs the
+# script in place). Hardcoded since this script is host-specific already
+# (ENV below is too).
+REPO_ROOT=/home/gowers/biohub-cell-tracking-v2
 ENV=/projects/twist2d/gowers/miniconda3/envs/cell-tracking
 
 echo "host: $(hostname)  gpu: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo n/a)"

@@ -249,6 +249,7 @@ def train(
     train_edge_model: bool = True,
     edge_loss_weight: float = EDGE_LOSS_WEIGHT,
     edge_every: int = 1,
+    save_every: int | None = None,
 ) -> Path:
     """Train to `out_path`, checkpointing every epoch.
 
@@ -315,6 +316,16 @@ def train(
     train_names, val_names = split_dataset_names(all_names, val_frac=val_frac, seed=val_seed)
     print(f"device={device}  volumes: {len(train_names)} train / {len(val_names)} val")
 
+    # `seed` used to drive only the frame sampler; model init was left to
+    # torch's global RNG, so two runs with identical flags got different
+    # weights. Three such "identical" runs scored 0.8056 / 0.8007 / 0.7513
+    # held-out (reports/2026-09-10-followup-lr-schedule-noise-floor.md), so
+    # unseeded init alone is a ~0.05 noise floor. Seed everything here so a
+    # same-seed pair differs only in what was deliberately changed (GPU
+    # nondeterminism in conv/attention kernels still remains).
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
     model = UNet3D().to(device)
     edge_scorer = EdgeScorer().to(device) if train_edge_model else None
     params = list(model.parameters()) + (list(edge_scorer.parameters()) if edge_scorer else [])
@@ -605,6 +616,12 @@ def train(
             "val_names": val_names,
         }
         torch.save(payload, out_path)
+        if save_every and (epoch + 1) % save_every == 0:
+            # Periodic snapshots so a long schedule can be scored along its
+            # trajectory: `val_loss`-selected `_best` picked a worse checkpoint
+            # than the last epoch in 14 of 17 cluster runs, so neither `_best`
+            # nor last alone is a trustworthy summary of a 300-epoch run.
+            torch.save(payload, out_path.with_name(f"{out_path.stem}_epoch{epoch + 1}{out_path.suffix}"))
 
         current = history.entries[-1][select_by]
         if current < best_value:
@@ -630,5 +647,9 @@ def train(
 
     print(f"Wrote {out_path} (last epoch)")
     if best_epoch:
-        print(f"Wrote {best_path} (epoch {best_epoch}, {select_by}={best_value:.5f}) -- use this one")
+        print(
+            f"Wrote {best_path} (epoch {best_epoch}, {select_by}={best_value:.5f}) -- NOTE: the "
+            "last-epoch checkpoint scored higher held-out than this one in 14 of 17 cluster runs; "
+            "score both before choosing (reports/2026-09-10-followup-lr-schedule-noise-floor.md)"
+        )
     return out_path

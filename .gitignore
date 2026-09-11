@@ -17,6 +17,7 @@ submission.csv
 dist/
 reports/
 *.zip
+docs/
 
 # Python
 __pycache__/

@@ -39,6 +39,10 @@ def main() -> int:
     parser.add_argument(
         "--edge-every", type=int, default=1, help="Train the edge scorer every Nth step."
     )
+    parser.add_argument("--seed", type=int, default=0, help="Seeds model init and the frame sampler.")
+    parser.add_argument(
+        "--save-every", type=int, default=None, help="Also keep a `<out>_epoch{N}.pt` snapshot every N epochs."
+    )
     args = parser.parse_args()
 
     train_dir = args.train_dir or get_train_dir()
@@ -70,6 +74,8 @@ def main() -> int:
         train_edge_model=not args.no_edge_model,
         edge_loss_weight=args.edge_loss_weight if args.edge_loss_weight is not None else EDGE_LOSS_WEIGHT,
         edge_every=args.edge_every,
+        seed=args.seed,
+        save_every=args.save_every,
     )
     if args.history_json:
         history.to_json(args.history_json)
