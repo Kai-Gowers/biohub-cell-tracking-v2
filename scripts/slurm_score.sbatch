@@ -16,19 +16,8 @@ set -euo pipefail
 REPO_ROOT=/home/gowers/biohub-cell-tracking-v2
 ENV=/projects/twist2d/gowers/miniconda3/envs/cell-tracking
 TAG="$1"; CKPT="$2"; shift 2
-# Any further arguments are passed to predict.py verbatim (e.g. --tta-z,
-# --link-radius-um 10, extra --checkpoint X for an ensemble).
-PREDICT_ARGS=("$@")
+# Any further arguments are passed to predict.py verbatim (e.g.
+# --secondary-checkpoint X --deepcenter Y, --stage ilp, --no-bidir, --post-off output_gap2_recovery).
 cd "$REPO_ROOT"
 echo "host: $(hostname)  gpu: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo n/a)"
-echo "tag: $TAG  checkpoint: $CKPT"
-"$ENV/bin/python" -u scripts/predict.py \
-  --split dist/heldout_split.json \
-  --checkpoint "$CKPT" \
-  --test-dir data/biohub-cell-tracking-during-development/train \
-  --out-dir "dist/preds_val_$TAG" \
-  --dump-candidates "dist/preds_val_$TAG/candidates" "${PREDICT_ARGS[@]}"
-"$ENV/bin/python" -u scripts/score_local.py \
-  --geff-dir "dist/preds_val_$TAG" \
-  --held-out "$CKPT" \
-  --json-out "dist/score_$TAG.json"
+exec scripts/score_one.sh "$TAG" "$CKPT" "$@"
