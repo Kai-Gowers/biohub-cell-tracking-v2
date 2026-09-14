@@ -29,9 +29,12 @@ from the zarr; ground truth from ``io_geff.read_geff``.
 
 from __future__ import annotations
 
+import datetime
 import json
 import math
+import os
 import random
+import socket
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -39,8 +42,9 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 from cell_tracking.cache import VolumeFrames, cache_path
 from cell_tracking.config import DOWNSAMPLE, VAL_FRAC, VAL_SEED
@@ -79,6 +83,14 @@ class TrainConfig:
     grad_clip: float = 1.0
     augment: bool = True
     brightness_shift: float = 0.1
+    # ours: extra augmentations, all OFF by default (the recipe is brightness + flips only).
+    # Names: "rot90" (random k*90 deg rotation in the y/x plane), "intensity" (per-window gain and
+    # gamma jitter), "noise" (additive Gaussian noise), "treverse" (swap the two frames and transpose
+    # the transition matrix; skipped on windows containing a division).
+    extra_augs: tuple[str, ...] = ()
+    aug_gain_range: tuple[float, float] = (0.8, 1.25)
+    aug_gamma_range: tuple[float, float] = (0.7, 1.4)
+    aug_noise_std_max: float = 0.03
     eval_max_batches: int = 200               # their validation loop cap
     # ours
     seed: int = 0
@@ -87,6 +99,14 @@ class TrainConfig:
     select_by: str = "val_score"
     max_hours: float | None = None
     data_parallel: bool = True
+    # ours: throughput options (experiments -- both change the numerics of the recipe; see
+    # reports/2026-09-14-4gpu-throughput-model-size-augmentation.md). amp: "none" | "bf16".
+    amp: str = "none"
+    compile_unet: bool = False
+    # ours: one process per visible GPU, each with batch_size // world samples, gradients averaged
+    # and BatchNorm statistics synchronised -> the same optimisation problem as one GPU with
+    # `batch_size` (up to floating point), ~2.5-3x faster on 4 L40S. Replaces data_parallel.
+    ddp: bool = False
     val_frac: float = VAL_FRAC
     val_seed: int = VAL_SEED
     val_prefix: str | None = None
@@ -103,6 +123,9 @@ class TrainConfig:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["unet_layers"] = list(self.unet_layers)
+        d["extra_augs"] = list(self.extra_augs)
+        d["aug_gain_range"] = list(self.aug_gain_range)
+        d["aug_gamma_range"] = list(self.aug_gamma_range)
         return d
 
 
@@ -309,6 +332,71 @@ def flip_augment(imgs: torch.Tensor, coords: torch.Tensor, masks: torch.Tensor, 
     return imgs, coords, masks
 
 
+# --- ours: extra augmentations (TrainConfig.extra_augs; none are part of the pack recipe) ---
+
+def rot90_xy_augment(imgs: torch.Tensor, coords: torch.Tensor, masks: torch.Tensor, *, rng: np.random.Generator):
+    """Rotate the (y, x) plane by k * 90 degrees, k ~ U{0..3}; real coords follow, padding stays at zero.
+
+    The model grid is isotropic (1.625 µm), so a rotation in the imaging plane is as valid a view as
+    the pack's flips; z is left alone (the optical axis is not exchangeable with y/x). Only applied
+    when Y == X so the frame shape is unchanged.
+    """
+    k = int(rng.integers(0, 4))
+    Y, X = imgs.shape[2], imgs.shape[3]
+    if k == 0 or Y != X:
+        return imgs, coords, masks
+    imgs = torch.rot90(imgs, k, dims=(2, 3))
+    coords = coords.clone()
+    y = coords[..., 1][masks]
+    x = coords[..., 2][masks]
+    for _ in range(k):
+        # torch.rot90(k=1, dims=(y, x)): new[i, j] = old[j, X-1-i]  =>  (y, x) -> (X-1-x, y)
+        y, x = X - 1 - x, y
+    coords[..., 1][masks] = y
+    coords[..., 2][masks] = x
+    return imgs, coords, masks
+
+
+def intensity_augment(imgs, coords, masks, *, rng: np.random.Generator, gain_range=(0.8, 1.25), gamma_range=(0.7, 1.4)):
+    """Per-window multiplicative gain (log-uniform) and gamma on the non-negative normalised intensities.
+
+    The pack normalises each video by its own quantiles, so the remaining brightness/contrast
+    differences between embryos and imaging sessions are exactly what this jitters. Applied to
+    both frames identically so frame-to-frame differences stay realistic.
+    """
+    gain = float(np.exp(rng.uniform(np.log(gain_range[0]), np.log(gain_range[1]))))
+    gamma = float(np.exp(rng.uniform(np.log(gamma_range[0]), np.log(gamma_range[1]))))
+    imgs = imgs.clamp(min=0).pow(gamma) * gain
+    return imgs, coords, masks
+
+
+def noise_augment(imgs, coords, masks, *, rng: np.random.Generator, std_max: float = 0.03):
+    """Additive Gaussian noise with sigma ~ U(0, std_max) (in normalised-intensity units)."""
+    sigma = float(rng.uniform(0.0, std_max))
+    if sigma <= 0:
+        return imgs, coords, masks
+    noise = torch.from_numpy(rng.standard_normal(tuple(imgs.shape), dtype=np.float32)) * sigma
+    return imgs + noise, coords, masks
+
+
+def time_reverse_window(imgs, coords, masks, targets, *, rng: np.random.Generator):
+    """With p = 0.5 play the window backwards: frames, coords and masks reversed, transition matrices
+    transposed and reordered. Skipped when any frame pair contains a division (a reversed division is a
+    merge, which the softmax-over-sources loss forbids)."""
+    if rng.random() < 0.5:
+        return imgs, coords, masks, targets
+    if bool((targets.sum(dim=2) > 1).any()):
+        return imgs, coords, masks, targets
+    imgs = imgs.flip(0)
+    coords = coords.flip(0)
+    masks = masks.flip(0)
+    targets = torch.stack([targets[i].T for i in range(targets.shape[0] - 1, -1, -1)]) if targets.shape[0] else targets
+    return imgs, coords, masks, targets
+
+
+EXTRA_AUG_NAMES = ("rot90", "intensity", "noise", "treverse")
+
+
 class FrameWindowDataset(Dataset):
     """Full-frame ``W``-frame windows whose frames all carry GT, padded to ``max_nodes``."""
 
@@ -321,6 +409,10 @@ class FrameWindowDataset(Dataset):
         augment: bool,
         brightness_shift: float,
         seed: int,
+        extra_augs: tuple[str, ...] = (),
+        aug_gain_range: tuple[float, float] = (0.8, 1.25),
+        aug_gamma_range: tuple[float, float] = (0.7, 1.4),
+        aug_noise_std_max: float = 0.03,
     ) -> None:
         self.volumes = volumes
         self.windows = windows
@@ -328,6 +420,13 @@ class FrameWindowDataset(Dataset):
         self.augment = augment
         self.brightness_shift = brightness_shift
         self.seed = seed
+        unknown = set(extra_augs) - set(EXTRA_AUG_NAMES)
+        if unknown:
+            raise ValueError(f"unknown extra augmentations {sorted(unknown)}; choose from {EXTRA_AUG_NAMES}")
+        self.extra_augs = tuple(extra_augs)
+        self.aug_gain_range = tuple(aug_gain_range)
+        self.aug_gamma_range = tuple(aug_gamma_range)
+        self.aug_noise_std_max = aug_noise_std_max
         self._rng: np.random.Generator | None = None
 
     def __len__(self) -> int:
@@ -358,8 +457,16 @@ class FrameWindowDataset(Dataset):
             targets[i, :nt, :nt1] = w.targets[i]
         if self.augment:
             rng = self.rng()
+            if "intensity" in self.extra_augs:   # before the additive shift: gamma needs non-negative input
+                imgs, coords, masks = intensity_augment(imgs, coords, masks, rng=rng, gain_range=self.aug_gain_range, gamma_range=self.aug_gamma_range)
             imgs, coords, masks = brightness_augment(imgs, coords, masks, rng=rng, shift_range=self.brightness_shift)
             imgs, coords, masks = flip_augment(imgs, coords, masks, rng=rng)
+            if "noise" in self.extra_augs:
+                imgs, coords, masks = noise_augment(imgs, coords, masks, rng=rng, std_max=self.aug_noise_std_max)
+            if "rot90" in self.extra_augs:
+                imgs, coords, masks = rot90_xy_augment(imgs, coords, masks, rng=rng)
+            if "treverse" in self.extra_augs:
+                imgs, coords, masks, targets = time_reverse_window(imgs, coords, masks, targets, rng=rng)
         return {
             "imgs": imgs.half(),
             "coords": coords,
@@ -397,6 +504,22 @@ def load_volume_windows(train_dir: Path, cache_dir: Path | None, name: str, volu
 # epoch loops (verbatim logic)
 # --------------------------------------------------------------------------
 
+def _autocast(cfg: TrainConfig):
+    if cfg.amp == "bf16":
+        return torch.autocast("cuda", dtype=torch.bfloat16)
+    if cfg.amp not in ("none", "", None):
+        raise ValueError(f"amp must be 'none' or 'bf16', got {cfg.amp!r}")
+    import contextlib
+    return contextlib.nullcontext()
+
+
+def _encode(model, imgs, cfg: TrainConfig):
+    """U-Net + detection head, under autocast when cfg.amp is set; outputs always float32."""
+    with _autocast(cfg):
+        unet_out, det_logits = model.encode(imgs)
+    return unet_out.float(), [d.float() for d in det_logits]
+
+
 def _frame_features(model, unet_out, det_logits, coords, masks, image_shape, voxel_size, cfg: TrainConfig, W: int):
     frame_det = []
     for i in range(W):
@@ -411,7 +534,22 @@ def _frame_features(model, unet_out, det_logits, coords, masks, image_shape, vox
     return frame_det
 
 
-def train_epoch(model, loader, optimizer, device, cfg: TrainConfig, log_every: int = 200) -> dict:
+def _all_reduce_grads(model: nn.Module, world: int) -> None:
+    """Average gradients across ranks (one flat all-reduce; the model is ~2 M parameters)."""
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    if not grads:
+        return
+    flat = torch.cat([g.reshape(-1) for g in grads])
+    dist.all_reduce(flat, op=dist.ReduceOp.SUM)
+    flat.div_(world)
+    offset = 0
+    for g in grads:
+        n = g.numel()
+        g.copy_(flat[offset:offset + n].view_as(g))
+        offset += n
+
+
+def train_epoch(model, loader, optimizer, device, cfg: TrainConfig, log_every: int = 200, world: int = 1, rank: int = 0) -> dict:
     model.train()
     total_edge = total_det = 0.0
     n_samples = 0
@@ -427,18 +565,19 @@ def train_epoch(model, loader, optimizer, device, cfg: TrainConfig, log_every: i
         ds_scale = batch["downsample"][0].to(device)
         B, W = imgs.shape[:2]
 
-        unet_out, det_logits = model.encode(imgs)
+        unet_out, det_logits = _encode(model, imgs, cfg)
         det_loss = sum(compute_detection_loss(det_logits[i], coords[:, i], masks[:, i], cfg.det_neg_weight) for i in range(W)) / W
         frame_det = _frame_features(model, unet_out, det_logits, coords, masks, image_shape, voxel_size, cfg, W)
         block_losses = []
         for i in range(W - 1):
             ns, nt = frame_det[i][0].shape[1], frame_det[i + 1][0].shape[1]
             pair_target = build_matched_edge_targets(frame_det[i][3], frame_det[i + 1][3], targets[:, i], ns, nt)
-            edge_logits = model.predict_edges(
-                frame_det[i][4], frame_det[i + 1][4],
-                frame_det[i][0] * ds_scale, frame_det[i + 1][0] * ds_scale,
-                frame_det[i][1], frame_det[i + 1][1], frame_det[i][2], frame_det[i + 1][2],
-            )
+            with _autocast(cfg):
+                edge_logits = model.predict_edges(
+                    frame_det[i][4], frame_det[i + 1][4],
+                    frame_det[i][0] * ds_scale, frame_det[i + 1][0] * ds_scale,
+                    frame_det[i][1], frame_det[i + 1][1], frame_det[i][2], frame_det[i + 1][2],
+                ).float()
             block_losses.append(compute_batch_loss(edge_logits, pair_target, frame_det[i][2], frame_det[i + 1][2]))
         edge_loss = sum(block_losses) / len(block_losses)
         loss = edge_loss + cfg.det_loss_weight * det_loss
@@ -447,15 +586,21 @@ def train_epoch(model, loader, optimizer, device, cfg: TrainConfig, log_every: i
 
         optimizer.zero_grad()
         loss.backward()
+        if world > 1:
+            _all_reduce_grads(model, world)
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
         grad_norms.append(float(gn))
         total_edge += edge_loss.item() * B
         total_det += det_loss.item() * B
         n_samples += B
-        if log_every and step % log_every == 0:
+        if log_every and step % log_every == 0 and rank == 0:
             print(f"    step {step}/{len(loader)} edge={edge_loss.item():.5f} det={det_loss.item():.5f} "
                   f"gn={float(gn):.2f} {time.perf_counter() - t0:.0f}s", flush=True)
+    if world > 1:
+        sums = torch.tensor([total_edge, total_det, float(n_samples)], device=device, dtype=torch.float64)
+        dist.all_reduce(sums, op=dist.ReduceOp.SUM)
+        total_edge, total_det, n_samples = float(sums[0]), float(sums[1]), int(sums[2])
     return {
         "edge_loss": total_edge / max(n_samples, 1),
         "det_loss": total_det / max(n_samples, 1),
@@ -482,7 +627,7 @@ def evaluate_pack(model, loader, device, cfg: TrainConfig) -> dict:
         voxel_size = tuple(batch["voxel_size"][0].tolist())
         ds_scale = batch["downsample"][0].to(device)
         B, W = imgs.shape[:2]
-        unet_out, det_logits = model.encode(imgs)
+        unet_out, det_logits = _encode(model, imgs, cfg)
         frame_det = _frame_features(model, unet_out, det_logits, coords, masks, image_shape, voxel_size, cfg, W)
         for i in range(W):
             for b in range(B):
@@ -491,11 +636,12 @@ def evaluate_pack(model, loader, device, cfg: TrainConfig) -> dict:
         for i in range(W - 1):
             ns, nt = frame_det[i][0].shape[1], frame_det[i + 1][0].shape[1]
             pair_target = build_matched_edge_targets(frame_det[i][3], frame_det[i + 1][3], targets[:, i], ns, nt)
-            pair_logits = model.predict_edges(
-                frame_det[i][4], frame_det[i + 1][4],
-                frame_det[i][0] * ds_scale, frame_det[i + 1][0] * ds_scale,
-                frame_det[i][1], frame_det[i + 1][1], frame_det[i][2], frame_det[i + 1][2],
-            )
+            with _autocast(cfg):
+                pair_logits = model.predict_edges(
+                    frame_det[i][4], frame_det[i + 1][4],
+                    frame_det[i][0] * ds_scale, frame_det[i + 1][0] * ds_scale,
+                    frame_det[i][1], frame_det[i + 1][1], frame_det[i][2], frame_det[i + 1][2],
+                ).float()
             for b in range(B):
                 ns_b = int(frame_det[i][2][b].sum().item())
                 nt_b = int(frame_det[i + 1][2][b].sum().item())
@@ -542,6 +688,10 @@ def eval_tracking(model, device, train_dir: Path, val_names: list[str], window_s
 # driver
 # --------------------------------------------------------------------------
 
+def _worker_init_fn(worker_id: int) -> None:
+    np.random.seed(torch.initial_seed() % 2**32)
+
+
 def _unwrap(model: UNetNodeTransformer) -> dict:
     return normalize_state_dict(model.state_dict())
 
@@ -550,6 +700,24 @@ def _seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _ddp_entry(rank: int, world: int, port: int, train_dir, out_path, cfg, cache_dir, names, resume, started_at, log_every) -> None:
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    torch.cuda.set_device(rank)
+    dist.init_process_group("nccl", rank=rank, world_size=world, timeout=datetime.timedelta(hours=2))
+    try:
+        _train_impl(rank, world, train_dir, out_path, cfg, cache_dir=cache_dir, names=names, resume=resume,
+                    started_at=started_at, device=torch.device("cuda", rank), log_every=log_every)
+    finally:
+        dist.destroy_process_group()
 
 
 def train(
@@ -564,6 +732,36 @@ def train(
     device: torch.device | None = None,
     log_every: int = 200,
 ) -> Path:
+    """Train; with ``cfg.ddp`` and >1 visible GPU, spawn one process per GPU (see ``TrainConfig.ddp``)."""
+    world = torch.cuda.device_count() if (cfg.ddp and torch.cuda.is_available()) else 1
+    if world > 1:
+        if cfg.batch_size % world:
+            raise ValueError(f"batch_size {cfg.batch_size} must be divisible by the {world} GPUs for --ddp")
+        import torch.multiprocessing as mp
+        print(f"DDP: {world} processes x {cfg.batch_size // world} samples (effective batch {cfg.batch_size}), SyncBatchNorm", flush=True)
+        mp.spawn(_ddp_entry, args=(world, _free_port(), Path(train_dir), Path(out_path), cfg, cache_dir, names, resume,
+                                   started_at or time.time(), log_every), nprocs=world, join=True)
+        return Path(out_path)
+    return _train_impl(0, 1, train_dir, out_path, cfg, cache_dir=cache_dir, names=names, resume=resume,
+                       started_at=started_at, device=device, log_every=log_every)
+
+
+def _train_impl(
+    rank: int,
+    world: int,
+    train_dir: Path,
+    out_path: Path,
+    cfg: TrainConfig,
+    *,
+    cache_dir: Path | None = None,
+    names: list[str] | None = None,
+    resume: bool = True,
+    started_at: float | None = None,
+    device: torch.device | None = None,
+    log_every: int = 200,
+) -> Path:
+    is_main = rank == 0
+    log = print if is_main else (lambda *a, **k: None)
     train_dir, out_path = Path(train_dir), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     started_at = started_at or time.time()
@@ -572,8 +770,8 @@ def train(
 
     all_names = names or list_geff_datasets(train_dir)
     train_names, val_names = split_dataset_names(all_names, val_frac=cfg.val_frac, seed=cfg.val_seed, val_prefix=cfg.val_prefix)
-    print(f"{len(train_names)} train / {len(val_names)} val volumes"
-          + (f" (held-out embryo {cfg.val_prefix})" if cfg.val_prefix else ""), flush=True)
+    log(f"{len(train_names)} train / {len(val_names)} val volumes"
+        + (f" (held-out embryo {cfg.val_prefix})" if cfg.val_prefix else ""), flush=True)
 
     def _load(split_names: list[str], label: str):
         vols, wins = [], []
@@ -581,35 +779,52 @@ def train(
             v, w = load_volume_windows(train_dir, cache_dir, n, i, cfg.window_size)
             vols.append(v)
             wins.extend(w)
-        print(f"  {label}: {len(vols)} volumes, {len(wins)} windows, cached={all(v.cached for v in vols)}", flush=True)
+        log(f"  {label}: {len(vols)} volumes, {len(wins)} windows, cached={all(v.cached for v in vols)}", flush=True)
         return vols, wins
 
     train_vols, train_windows = _load(train_names, "train")
     val_vols, val_windows = _load(val_names, "val")
     max_nodes = max(max(len(c) for c in w.coords) for w in train_windows + val_windows)
-    print(f"max_nodes={max_nodes}", flush=True)
+    log(f"max_nodes={max_nodes}", flush=True)
 
-    train_ds = FrameWindowDataset(train_vols, train_windows, max_nodes, augment=cfg.augment, brightness_shift=cfg.brightness_shift, seed=cfg.seed)
+    train_ds = FrameWindowDataset(train_vols, train_windows, max_nodes, augment=cfg.augment, brightness_shift=cfg.brightness_shift, seed=cfg.seed,
+                                  extra_augs=cfg.extra_augs, aug_gain_range=cfg.aug_gain_range,
+                                  aug_gamma_range=cfg.aug_gamma_range, aug_noise_std_max=cfg.aug_noise_std_max)
+    if cfg.extra_augs:
+        log(f"extra augmentations: {list(cfg.extra_augs)} (not part of the pack recipe)", flush=True)
     val_ds = FrameWindowDataset(val_vols, val_windows, max_nodes, augment=False, brightness_shift=0.0, seed=cfg.seed)
     g = torch.Generator()
-    g.manual_seed(cfg.seed)
-
-    def worker_init_fn(worker_id: int) -> None:
-        np.random.seed(torch.initial_seed() % 2**32)
+    g.manual_seed(cfg.seed + rank)
 
     loader_kw = dict(num_workers=cfg.num_workers, prefetch_factor=2 if cfg.num_workers > 0 else None,
-                     persistent_workers=cfg.num_workers > 0, pin_memory=False, worker_init_fn=worker_init_fn)
-    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, generator=g, **loader_kw)
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, **loader_kw)
+                     persistent_workers=cfg.num_workers > 0, pin_memory=False, worker_init_fn=_worker_init_fn)
+    if world > 1 and cfg.num_workers > 0:
+        # spawned DDP ranks default to spawn-started loader workers, which would pickle the datasets
+        # (and their memory-mapped caches); fork them instead, as the single-process path does.
+        loader_kw["multiprocessing_context"] = "fork"
+    per_rank_batch = cfg.batch_size // world
+    train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=cfg.seed, drop_last=True) if world > 1 else None
+    train_loader = DataLoader(train_ds, batch_size=per_rank_batch, shuffle=train_sampler is None, sampler=train_sampler, generator=g, **loader_kw)
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, **loader_kw) if is_main else None
 
-    model = build_model(cfg.model_config()).to(device)
+    model = build_model(cfg.model_config())
+    if world > 1:
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)   # BN statistics over the global batch, as on one GPU
+    model = model.to(device)
     n_visible = torch.cuda.device_count() if device.type == "cuda" else 0
-    if cfg.data_parallel and n_visible > 1:
+    if cfg.data_parallel and n_visible > 1 and world == 1:
         model.unet = nn.DataParallel(model.unet)
-        print(f"DataParallel: UNet across {n_visible} GPUs", flush=True)
+        log(f"DataParallel: UNet across {n_visible} GPUs", flush=True)
+    if cfg.compile_unet:
+        # compile the bound forward, so the module's state_dict keys (and resume) are untouched
+        model.unet.forward = torch.compile(model.unet.forward)
+        log("torch.compile: UNet forward", flush=True)
+    if cfg.amp != "none":
+        log(f"autocast {cfg.amp} for the U-Net and the node transformer (experiment; changes numerics)", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"device={device} params={n_params:,} epochs={cfg.epochs} lr={cfg.lr} batch={cfg.batch_size}", flush=True)
+    log(f"device={device} params={n_params:,} epochs={cfg.epochs} lr={cfg.lr} batch={cfg.batch_size}"
+        + (f" ({world} ranks x {per_rank_batch})" if world > 1 else ""), flush=True)
 
     history: list[dict] = []
     start_epoch = 0
@@ -628,9 +843,9 @@ def train(
             v = h.get(cfg.select_by)
             if v is not None and (best_value is None or v > best_value):
                 best_value, best_epoch = v, h["epoch"]
-        print(f"resumed from {out_path} at epoch {start_epoch} (best {cfg.select_by}={best_value} @ {best_epoch})", flush=True)
+        log(f"resumed from {out_path} at epoch {start_epoch} (best {cfg.select_by}={best_value} @ {best_epoch})", flush=True)
         if start_epoch >= cfg.epochs:
-            print("already at target epochs; nothing to do", flush=True)
+            log("already at target epochs; nothing to do", flush=True)
             return out_path
 
     def payload(epoch: int, extra: dict | None = None) -> dict:
@@ -655,14 +870,23 @@ def train(
 
     best_path = out_path.with_name(out_path.stem + "_best" + out_path.suffix)
     for epoch in range(start_epoch, cfg.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         t0 = time.time()
-        stats = train_epoch(model, train_loader, optimizer, device, cfg, log_every=log_every)
+        stats = train_epoch(model, train_loader, optimizer, device, cfg, log_every=log_every, world=world, rank=rank)
         train_seconds = time.time() - t0
+        epoch_no = epoch + 1
+        is_last = epoch_no == cfg.epochs
+        if not is_main:
+            # rank 0 evaluates and saves; the others wait, then take its stop decision
+            stop_t = torch.zeros(1, device=device)
+            dist.broadcast(stop_t, src=0)
+            if bool(stop_t.item()):
+                break
+            continue
         t1 = time.time()
         stats.update(evaluate_pack(model, val_loader, device, cfg))
         stats["pack_val_seconds"] = time.time() - t1
-        epoch_no = epoch + 1
-        is_last = epoch_no == cfg.epochs
         if cfg.eval_tracking_every and (epoch_no % cfg.eval_tracking_every == 0 or is_last):
             stats.update(eval_tracking(model, device, train_dir, val_names, cfg.window_size))
         stats.update({"epoch": epoch_no, "train_seconds": train_seconds, "lr": cfg.lr})
@@ -690,9 +914,13 @@ def train(
             msg += f"  * new best {cfg.select_by}"
         print(msg, flush=True)
 
-        if cfg.max_hours is not None and (time.time() - started_at) / 3600.0 >= cfg.max_hours:
+        stop = cfg.max_hours is not None and (time.time() - started_at) / 3600.0 >= cfg.max_hours
+        if stop:
             print(f"max_hours={cfg.max_hours} reached after epoch {epoch_no}; stopping cleanly (resume to continue)", flush=True)
+        if world > 1:
+            dist.broadcast(torch.tensor([1.0 if stop else 0.0], device=device), src=0)
+        if stop:
             break
 
-    print(f"done: last epoch {history[-1]['epoch'] if history else start_epoch}, best {cfg.select_by}={best_value} @ epoch {best_epoch}", flush=True)
+    log(f"done: last epoch {history[-1]['epoch'] if history else start_epoch}, best {cfg.select_by}={best_value} @ epoch {best_epoch}", flush=True)
     return out_path

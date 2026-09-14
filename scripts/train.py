@@ -40,6 +40,8 @@ def main() -> int:
     p.add_argument("--det-neg-weight", type=float, default=0.01)
     p.add_argument("--pool-kernel-um", type=float, default=5.0)
     p.add_argument("--no-augment", action="store_true")
+    p.add_argument("--aug", type=str, default="",
+                   help="Extra augmentations (experiment, off by default), comma-separated from: rot90,intensity,noise,treverse.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--val-embryo", type=str, default=None, help="Hold out every crop of this embryo (44b6|6bba).")
     p.add_argument("--eval-tracking-every", type=int, default=5)
@@ -48,6 +50,12 @@ def main() -> int:
     p.add_argument("--select-by", type=str, default="val_score")
     p.add_argument("--max-hours", type=float, default=None)
     p.add_argument("--single-gpu", action="store_true", help="Disable DataParallel on the U-Net.")
+    p.add_argument("--amp", choices=["none", "bf16"], default="none",
+                   help="bf16 autocast for U-Net + transformer (experiment: ~1.4x on L40S, changes numerics).")
+    p.add_argument("--compile", action="store_true", help="torch.compile the U-Net forward (~1.2x on top of bf16).")
+    p.add_argument("--ddp", action="store_true",
+                   help="One process per visible GPU, batch split across them, gradients averaged, SyncBatchNorm: "
+                        "same optimisation as one GPU with --batch-size, ~2.5-3x faster on 4 GPUs.")
     p.add_argument("--limit-volumes", type=int, default=None)
     p.add_argument("--no-resume", action="store_true")
     p.add_argument("--log-every", type=int, default=200)
@@ -67,9 +75,11 @@ def main() -> int:
         unet_layers=tuple(int(x) for x in args.unet_layers.split(",")),
         det_loss_weight=args.det_loss_weight, det_neg_weight=args.det_neg_weight,
         pool_kernel_um=args.pool_kernel_um, augment=not args.no_augment, seed=args.seed,
+        extra_augs=tuple(a for a in args.aug.split(",") if a),
         eval_tracking_every=args.eval_tracking_every, eval_max_batches=args.eval_max_batches,
         save_every=args.save_every, select_by=args.select_by, max_hours=args.max_hours,
         data_parallel=not args.single_gpu, val_prefix=args.val_embryo,
+        amp=args.amp, compile_unet=args.compile, ddp=args.ddp,
     )
     print(f"config: {cfg.to_dict()}", flush=True)
     print(f"cache: {cache_dir}", flush=True)

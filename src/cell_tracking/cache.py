@@ -62,13 +62,25 @@ class VolumeFrames:
         self.n_t = int(self.raw_shape[0])
         self.q_low, self.q_high = video_quantiles(read_attrs(self.zarr_path))
         self._cached: np.ndarray | None = None
-        if cache_file is not None and Path(cache_file).exists():
-            self._cached = np.load(cache_file, mmap_mode="r")
+        self._cache_file = Path(cache_file) if cache_file is not None and Path(cache_file).exists() else None
+        if self._cache_file is not None:
+            self._cached = np.load(self._cache_file, mmap_mode="r")
             if int(self._cached.shape[0]) != self.n_t:
                 raise ValueError(f"{cache_file}: {self._cached.shape[0]} frames, zarr has {self.n_t}")
             self.shape = tuple(int(s) for s in self._cached.shape[1:])
         else:
             self.shape = decimate(read_volume(self.zarr_path, 0, self.raw_shape, self._dtype)).shape
+
+    def __getstate__(self) -> dict:
+        # never pickle the memory map itself (it would serialise the whole volume); reopen it instead
+        state = dict(self.__dict__)
+        state["_cached"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        if self._cache_file is not None:
+            self._cached = np.load(self._cache_file, mmap_mode="r")
 
     @property
     def cached(self) -> bool:
