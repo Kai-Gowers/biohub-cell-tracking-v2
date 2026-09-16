@@ -839,6 +839,8 @@ def _train_impl(
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = int(ckpt["epoch"])
         history = list(ckpt.get("history", []))
+        if rank == 0:
+            print(f"resumed from {out_path} at epoch {start_epoch}", flush=True)
         for h in history:
             v = h.get(cfg.select_by)
             if v is not None and (best_value is None or v > best_value):

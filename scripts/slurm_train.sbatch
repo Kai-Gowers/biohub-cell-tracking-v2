@@ -59,9 +59,18 @@ done
 # Fork: CT_FORK_FROM=<checkpoint> sbatch ... --out <new path> starts the run from a copy of an
 # existing checkpoint when <new path> does not exist yet, so a variant (e.g. --ddp) can continue
 # a run under a different file while the original keeps going.
-if [ -n "${CT_FORK_FROM:-}" ] && [ -n "$OUT" ] && [ ! -e "$OUT" ]; then
-  echo "forking $OUT from $CT_FORK_FROM (epoch $("$ENV/bin/python" -c 'import sys,torch; print(torch.load(sys.argv[1], map_location="cpu", weights_only=False)["epoch"])' "$CT_FORK_FROM"))"
-  cp "$CT_FORK_FROM" "$OUT"
+# Always echo the hand-over variables: on 2026-09-14 two --ddp jobs silently started from
+# scratch because CT_FORK_FROM never reached the job environment (reports/2026-09-14-ddp-runs-started-from-scratch.md).
+echo "CT_FORK_FROM=${CT_FORK_FROM:-<unset>}  CT_CANCEL_JOBNAME=${CT_CANCEL_JOBNAME:-<unset>}  CT_CHAIN=${CT_CHAIN:-1}  out=${OUT:-<none>} exists=$([ -n "$OUT" ] && [ -e "$OUT" ] && echo yes || echo no)"
+if [ -n "${CT_FORK_FROM:-}" ]; then
+  if [ ! -e "$CT_FORK_FROM" ]; then echo "CT_FORK_FROM=$CT_FORK_FROM does not exist; refusing to start from scratch" >&2; exit 1; fi
+  if [ -z "$OUT" ]; then echo "CT_FORK_FROM set but no --out given" >&2; exit 1; fi
+  if [ -e "$OUT" ]; then
+    echo "fork skipped: $OUT already exists (resuming it instead)"
+  else
+    echo "forking $OUT from $CT_FORK_FROM (epoch $("$ENV/bin/python" -c 'import sys,torch; print(torch.load(sys.argv[1], map_location="cpu", weights_only=False)["epoch"])' "$CT_FORK_FROM"))"
+    cp "$CT_FORK_FROM" "$OUT"
+  fi
 fi
 
 "$ENV/bin/python" -u "$REPO_ROOT/scripts/train.py" "$@"
