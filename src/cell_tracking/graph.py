@@ -1,4 +1,4 @@
-"""Mutable tracking graph shared by linking and the writers."""
+"""Mutable tracking graph shared by the ILP / post-processing stages, the scorer and the writers."""
 
 from __future__ import annotations
 
@@ -76,9 +76,6 @@ class TrackGraph:
         return g
 
     # --- queries ----------------------------------------------------------
-    def nodes_at(self, t: int) -> list[int]:
-        return [n for n, node in self.nodes.items() if node.t == t]
-
     def out_degree(self) -> dict[int, int]:
         deg: dict[int, int] = {}
         for u, _ in self.edges:

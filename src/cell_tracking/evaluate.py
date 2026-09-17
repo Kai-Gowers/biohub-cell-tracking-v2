@@ -1,7 +1,7 @@
 """Score a predicted graph against a volume's ground truth, in memory.
 
 One implementation shared by `scripts/score_local.py` (graphs read back from
-`.geff`) and `train.eval_tracking` (graphs straight out of `predict_volume`,
+`.geff`) and `pack_train.eval_tracking` (graphs straight out of `pipeline.run_volume`,
 every few epochs, so checkpoints can be selected by the competition metric
 instead of the detection-only `val_loss` -- which picked a worse checkpoint
 than the last epoch in 14 of 17 cluster runs).

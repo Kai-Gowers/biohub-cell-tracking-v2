@@ -61,7 +61,8 @@ python scripts/train_deepcenter.py --out-dir dist/models/deepcenter --epochs 50
 
 # Score checkpoints (our checkpoints carry val_names; extra args go to predict.py)
 scripts/score_one.sh <tag> <checkpoint> --secondary-checkpoint <ckpt2> --deepcenter <dc>
-sbatch scripts/slurm_score_sweep.sbatch pack_s0 --deepcenter dist/models/deepcenter/best.pt
+sbatch scripts/slurm_score_sweep.sbatch pack_s0 --deepcenter dist/models/deepcenter/best.pt   # every _epochN.pt of a run
+sbatch scripts/slurm_score.sbatch <tag> <checkpoint> [predict args]                          # one checkpoint, same body as score_one.sh
 srun --partition=interactivegpu --ntasks=1 --gres=gpu:4 --cpus-per-task=32 --time=01:00:00 scripts/slurm_gpu_batch.sh <taskfile>
 
 # Parity against the reference pack (GPU)
@@ -115,7 +116,7 @@ Train on 179 volumes, hold out `dist/heldout_split.json` (5 x `44b6`, 15 x `6bba
 - Per-volume weights track annotation density, not volume size.
 - **Cross-checkpoint score comparisons were anti-correlated with the leaderboard in the sibling repo** (r = -0.799 over five submissions). Trust same-checkpoint, different-config comparisons; distrust cross-checkpoint ones, including comparisons back to that repo's numbers.
 
-The reliable use is a held-out set the model never trained on: `scripts/score_local.py --held-out <checkpoint>`. It applies the official node-count adjustment (`metric.adjusted_jaccard`) and the official per-sample weighting, and prints **per-embryo subtotals** -- read those, not just the total. `scripts/analyze_errors.py` (same inputs) splits every counted edge error by cause (endpoint undetected vs. wrong link vs. unlinked), by embryo and by crowding, and with a `--dump-candidates` prediction also reports true-partner rank and greedy-vs-exact-assignment regret.
+The reliable use is a held-out set the model never trained on: `scripts/score_local.py --held-out <checkpoint>`. It applies the official node-count adjustment (`metric.adjusted_jaccard`) and the official per-sample weighting, and prints **per-embryo subtotals** -- read those, not just the total. `scripts/analyze_errors.py` (same inputs) splits every counted edge error by cause (endpoint undetected vs. wrong link vs. unlinked), by embryo and by crowding. (Its `--candidates` rank/regret mode has no producer in the ported pipeline yet.)
 
 ## Embryos
 

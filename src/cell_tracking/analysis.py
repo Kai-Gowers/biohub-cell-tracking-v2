@@ -11,7 +11,8 @@ can be read off separately, per embryo and per crowding level:
   linker chose another detection (a pure association error), or it was not
   (nothing right to link to, so the root cause is the detector).
 
-With a candidate dump from `predict_volume(dump_candidates=...)` it also
+With a candidate dump (`--candidates`; NOTE: the ported pack pipeline has no
+producer for these `.npz` files yet, so this path is currently unused) it also
 reports the true partner's RANK among that source's distance-gated candidates
 and the greedy-vs-exact-assignment REGRET on the same scores -- the two
 numbers that decide whether the scorer or the selector is failing.

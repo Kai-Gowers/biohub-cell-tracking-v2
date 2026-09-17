@@ -27,15 +27,6 @@ class GeffGraph:
     # bonus; None when the file carries no edge props (competition GT).
     edge_prob: np.ndarray | None = None
 
-    def centroids_by_t(self) -> dict[int, list[tuple[int, int, int]]]:
-        out: dict[int, list[tuple[int, int, int]]] = {}
-        for i in range(len(self.node_ids)):
-            ti = int(self.t[i])
-            out.setdefault(ti, []).append(
-                (int(self.z[i]), int(self.y[i]), int(self.x[i]))
-            )
-        return out
-
     def nodes_by_t(self) -> dict[int, list[tuple[int, tuple[int, int, int]]]]:
         """Map t -> list of (node_id, (z,y,x))."""
         out: dict[int, list[tuple[int, tuple[int, int, int]]]] = {}
@@ -50,12 +41,6 @@ class GeffGraph:
     def t_of(self) -> dict[int, int]:
         return {int(n): int(tt) for n, tt in zip(self.node_ids, self.t)}
 
-    def coords_of(self) -> dict[int, tuple[float, float, float]]:
-        return {
-            int(self.node_ids[i]): (float(self.z[i]), float(self.y[i]), float(self.x[i]))
-            for i in range(len(self.node_ids))
-        }
-
     def out_degree(self) -> dict[int, int]:
         deg: dict[int, int] = {}
         for u, _v in self.edges:
@@ -66,15 +51,6 @@ class GeffGraph:
         """Node ids with >= 2 outgoing edges (the metric's definition of a fork)."""
         return {n for n, d in self.out_degree().items() if d >= 2}
 
-    def edges_by_frame_pair(self) -> dict[tuple[int, int], list[tuple[int, int]]]:
-        """Map (t_source, t_target) -> list of (source_id, target_id)."""
-        tmap = self.t_of()
-        out: dict[tuple[int, int], list[tuple[int, int]]] = {}
-        for u, v in self.edges:
-            u, v = int(u), int(v)
-            key = (tmap[u], tmap[v])
-            out.setdefault(key, []).append((u, v))
-        return out
 
 
 def list_geff_datasets(train_dir: Path | str) -> list[str]:

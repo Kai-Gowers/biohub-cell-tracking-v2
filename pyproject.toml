@@ -5,12 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cell-tracking"
 version = "0.1.0"
-description = "Biohub cell tracking -- windowed 3D U-Net detector + learned edge model + greedy linking"
+description = "Biohub cell tracking -- port of the public 0.942-LB pipeline: TemporalUNet3D + node transformer, tracksdata ILP, notebook post-processing"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
-    "pandas",
     "scipy",
     "blosc2",
     "torch",
@@ -34,6 +33,7 @@ ilp = [
     "ilpy>=0.5.1",
     "pyscipopt",
     "polars>=1.36",
+    "polars_runtime_32",
     "rustworkx>=0.17.1",
     "sqlalchemy>=2",
     "dask",
@@ -43,3 +43,6 @@ ilp = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

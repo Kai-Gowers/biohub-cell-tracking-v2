@@ -2,7 +2,7 @@
 """Score predicted `.geff` graphs against local ground truth.
 
     # primary signal: volumes the model never trained on
-    python scripts/score_local.py --geff-dir dist/preds_val --held-out dist/models/detector.pt
+    python scripts/score_local.py --geff-dir dist/preds_val_x --split dist/heldout_split.json
 
     # the 4 competition volumes (trained on -- optimistic, reported separately)
     python scripts/score_local.py --geff-dir dist/preds --competition
