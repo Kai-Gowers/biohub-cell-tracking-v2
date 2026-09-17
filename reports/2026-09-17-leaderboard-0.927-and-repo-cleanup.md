@@ -72,4 +72,22 @@ prediction folders; list in `dist/logs/cleanup-2026-09-17-deleted.txt`.
 
 ## Regression gate results
 
-(filled in below once run)
+`scripts/predict.py` with the submitted configuration on `44b6_1574802b`, compared with
+`scripts/parity/parity_check.py` (exact node coordinates per frame, edge set as coordinate pairs, `edge_prob`):
+
+| ours | oracle | nodes only ours / only oracle | edge Jaccard | max |edge_prob| diff | verdict |
+|---|---|---|---|---|---|
+| cleaned tree (eba4453), L40S g019 | 2026-09-16 sweep output, A100 g003 | 37 / 36 of 19730 | 0.9957 | 0.043 | mismatch |
+| pre-cleanup tree (8f014ea), L40S g019 | same 2026-09-16 A100 output | 37 / 36 | 0.9957 | 0.043 | identical mismatch |
+| pre-cleanup tree, L40S | cleaned tree, L40S | 0 / 0 | 1.0 | 0.0 | **bit-exact** |
+| cleaned tree, run 1 | cleaned tree, run 2 (same node) | 0 / 0 | 1.0 | 0.0 | **bit-exact** |
+
+So the cleanup changes nothing; the 0.2 % node-set difference is A100 vs L40S floating point, present
+identically with the old code. Worth remembering when comparing predictions across partitions: `short`
+hands out A100s, `interactivegpu` L40S, and bit-exact comparisons need the same GPU type. Logs:
+`dist/logs/regress-cleanup-2026-09-17.log`, `dist/logs/regress-old-vs-new-2026-09-17.log`.
+
+Other checks: `pytest tests` 5/5; every script imports and prints `--help`; re-scoring
+`dist/preds_val_ddp_best_blend` reproduces 0.8952 (FP 705, FN 884) exactly; a rebuilt Kaggle zip differs from
+the submitted `dist/cell_tracking_0942_ddp_best.zip` only in the six edited non-pipeline files, the removed
+`download_data.py` and the new archive folder, with identical model sha256s.
