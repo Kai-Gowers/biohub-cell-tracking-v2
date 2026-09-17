@@ -1,0 +1,914 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Cell Tracking Pipeline 0.942</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --bg:#F6F8FA; --surface:#FFFFFF; --ink:#1B2430; --muted:#5B6878; --line:#D3DAE3; --line-soft:#E8EDF2;
+  --cell:#1E9E6A; --cell-soft:#DDF3E8; --link:#B6479B; --link-soft:#F5E1F0; --attn:#3B6FD6; --attn-soft:#E1EAFB;
+  --warn:#C9741F; --warn-soft:#FBEBD9; --gt:#6B7A8C;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E141B; --surface:#151D26; --ink:#E6ECF2; --muted:#97A4B4; --line:#2B3642; --line-soft:#1F2A35;
+    --cell:#3DD68C; --cell-soft:#143626; --link:#E06AC6; --link-soft:#3A1F35; --attn:#6D9BFF; --attn-soft:#1B2A48;
+    --warn:#E39A4A; --warn-soft:#3A2A16; --gt:#8D9CAE;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E141B; --surface:#151D26; --ink:#E6ECF2; --muted:#97A4B4; --line:#2B3642; --line-soft:#1F2A35;
+  --cell:#3DD68C; --cell-soft:#143626; --link:#E06AC6; --link-soft:#3A1F35; --attn:#6D9BFF; --attn-soft:#1B2A48;
+  --warn:#E39A4A; --warn-soft:#3A2A16; --gt:#8D9CAE;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:17px;line-height:1.55;padding-block:0 64px;padding-inline:clamp(16px,4vw,40px)}
+.wrap{max-width:980px;margin:0 auto}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;line-height:1.1}
+h1{font-size:clamp(34px,5vw,52px);font-weight:700;letter-spacing:-0.01em}
+h2{font-size:clamp(24px,3vw,32px);font-weight:700}
+h3{font-size:18px;font-weight:700}
+p{margin:0}
+.eyebrow{font-family:var(--display);font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
+code,.mono{font-family:var(--mono);font-size:0.86em}
+code{background:var(--line-soft);padding:1px 5px;border-radius:4px}
+a{color:var(--attn)}
+header{padding-block:48px 8px;display:grid;gap:14px}
+header .lede{font-size:20px;max-width:64ch;color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:10px 22px;font-family:var(--display);font-size:14px;color:var(--muted);margin-top:6px}
+.legend span::before{content:"";display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:7px;vertical-align:-1px;background:var(--c)}
+figure{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 18px 14px;overflow-x:auto}
+figure svg{display:block;max-width:100%;height:auto;min-width:520px;margin:0 auto;color:var(--ink);font-family:var(--display)}
+figure svg text{font-family:var(--display);font-size:12px;fill:currentColor}
+figure svg .mono{font-family:var(--mono);font-size:11px}
+figure svg .muted{fill:var(--muted)}
+figure svg .small{font-size:10.5px}
+figcaption{font-size:14.5px;color:var(--muted);margin-top:12px;max-width:80ch}
+figcaption b{color:var(--ink);font-weight:600}
+nav.map{margin-top:28px}
+nav.map ol{list-style:none;padding:0;margin:14px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+nav.map li a{display:block;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);text-decoration:none;color:var(--ink);font-family:var(--display);font-size:14px;line-height:1.3}
+nav.map li a:hover,nav.map li a:focus-visible{border-color:var(--attn);outline:none}
+nav.map li a small{display:block;color:var(--muted);font-size:12px;margin-bottom:2px}
+section.stage{margin-top:64px;display:grid;gap:18px}
+.stage-head{display:grid;gap:6px}
+.plain{font-size:19px;max-width:66ch;padding-left:18px;border-left:4px solid var(--cell)}
+.plain::before{content:"In plain words";display:block;font-family:var(--display);font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:var(--cell);font-weight:700;margin-bottom:4px}
+.deep{display:grid;grid-template-columns:minmax(0,3fr) minmax(220px,2fr);gap:20px 32px;align-items:start}
+.deep h3{margin-bottom:8px}
+.deep h3::before{content:"Under the hood";display:block;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:2px}
+.deep ul{margin:0;padding-left:20px;display:grid;gap:8px;max-width:64ch}
+.deep li{font-size:16.5px}
+.params{margin:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:14px}
+.params div{display:grid;grid-template-columns:1fr auto;gap:12px;padding:8px 12px;border-top:1px solid var(--line-soft);align-items:baseline}
+.params div:first-child{border-top:0}
+.params dt{color:var(--muted);font-family:var(--display)}
+.params dd{margin:0;font-family:var(--mono);font-size:13px;text-align:right;font-variant-numeric:tabular-nums}
+.params .hd{background:var(--line-soft);font-family:var(--display);font-weight:700;font-size:12px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);grid-template-columns:1fr}
+.callout{border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:8px;padding:14px 18px;background:var(--surface);font-size:16px;max-width:76ch}
+.callout b{font-family:var(--display)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:4px}
+.stat .n{font-family:var(--mono);font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat .l{font-family:var(--display);font-size:13.5px;color:var(--muted);line-height:1.3}
+.gloss{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 28px;margin:0}
+.gloss div{padding:10px 0;border-top:1px solid var(--line-soft)}
+.gloss dt{font-family:var(--display);font-weight:700;font-size:15px}
+.gloss dd{margin:2px 0 0;font-size:15px;color:var(--muted)}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table.compare{border-collapse:collapse;width:100%;min-width:640px;font-size:14.5px;font-family:var(--display)}
+table.compare th,table.compare td{padding:9px 14px;text-align:left;vertical-align:top;border-top:1px solid var(--line-soft)}
+table.compare thead th{border-top:0;background:var(--line-soft);font-size:12px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)}
+table.compare td:first-child{color:var(--muted);white-space:nowrap}
+table.compare td:last-child{font-weight:600}
+table.compare .mono{font-size:12.5px}
+.passes{display:grid;gap:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)}
+.pass{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:12px;padding:12px 16px;border-top:1px solid var(--line-soft);align-items:baseline}
+.pass:first-child{border-top:0}
+.pass .k{font-family:var(--mono);font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.pass .t{font-family:var(--display);font-weight:700;font-size:15px}
+.pass .d{font-size:15px;color:var(--muted);margin-top:2px}
+.pass .v{font-family:var(--mono);font-size:12.5px;text-align:right;color:var(--ink);white-space:nowrap}
+.pass.off{opacity:0.55}
+footer{margin-top:64px;font-size:14px;color:var(--muted);max-width:70ch}
+@media (max-width:640px){.deep{grid-template-columns:1fr}.plain{font-size:17.5px}body{font-size:16px}.pass{grid-template-columns:34px 1fr}.pass .v{grid-column:2;text-align:left}}
+@media (prefers-reduced-motion:no-preference){nav.map li a{transition:border-color .15s}}
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">Biohub · Cell Tracking During Development · branch replicate-0942 · the pipeline end to end</p>
+  <h1>How a 3D movie of an embryo becomes a family tree of cells, second edition</h1>
+  <p class="lede">A microscope films an embryo growing: a stack of slices, about 100 times over. The job is to find every cell nucleus in every 3D frame and say which nucleus it was one frame earlier. This page walks through the pipeline on the <span class="mono">replicate-0942</span> branch, a faithful port of a public solution that scores 0.942 on the leaderboard. Plain version first, machine-learning detail underneath, and at the end what changed from the previous edition of this page.</p>
+  <div class="legend"><span style="--c:var(--cell)">cells and detections</span><span style="--c:var(--link)">links between frames</span><span style="--c:var(--attn)">attention and the second model</span><span style="--c:var(--warn)">repairs made after linking</span><span style="--c:var(--gt)">human-annotated ground truth</span></div>
+</header>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Three consecutive 3D frames of an embryo, each with glowing cell nuclei, and magenta links tying each nucleus to the same nucleus one frame later, including one cell that divides into two.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+  </defs>
+  <line x1="40" y1="232" x2="720" y2="232" stroke="currentColor" stroke-width="1" marker-end="url(#ah)"/>
+  <text x="380" y="247" text-anchor="middle" class="muted">time (one frame ≈ one microscope exposure; 40 to 100 per video)</text>
+  <g fill="var(--surface)" stroke="currentColor" stroke-width="1.2">
+    <path d="M40 60 l30 -22 h150 v150 l-30 22 h-150z" fill="var(--line-soft)"/><rect x="40" y="60" width="150" height="150" rx="6"/>
+    <path d="M300 60 l30 -22 h150 v150 l-30 22 h-150z" fill="var(--line-soft)"/><rect x="300" y="60" width="150" height="150" rx="6"/>
+    <path d="M560 60 l30 -22 h150 v150 l-30 22 h-150z" fill="var(--line-soft)"/><rect x="560" y="60" width="150" height="150" rx="6"/>
+  </g>
+  <text x="115" y="30" text-anchor="middle">frame t − 1</text>
+  <text x="375" y="30" text-anchor="middle">frame t</text>
+  <text x="635" y="30" text-anchor="middle">frame t + 1</text>
+  <text x="115" y="226" text-anchor="middle" class="small muted">64 × 256 × 256 voxels (z, y, x)</text>
+  <g stroke="var(--link)" stroke-width="2" fill="none">
+    <path d="M80 100 C 200 95, 240 105, 340 108"/>
+    <path d="M120 160 C 220 158, 260 150, 372 150"/>
+    <path d="M160 120 C 250 120, 300 90, 400 92"/>
+    <path d="M340 108 C 440 106, 500 100, 600 102"/>
+    <path d="M372 150 C 460 150, 520 140, 620 138"/>
+    <path d="M400 92 C 480 90, 540 60, 650 70"/>
+    <path d="M372 150 C 470 160, 520 185, 640 188" stroke-dasharray="4 3"/>
+  </g>
+  <g fill="var(--cell)">
+    <g opacity="0.25"><circle cx="80" cy="100" r="13"/><circle cx="120" cy="160" r="13"/><circle cx="160" cy="120" r="13"/><circle cx="340" cy="108" r="13"/><circle cx="372" cy="150" r="13"/><circle cx="400" cy="92" r="13"/><circle cx="600" cy="102" r="13"/><circle cx="620" cy="138" r="13"/><circle cx="650" cy="70" r="13"/><circle cx="640" cy="188" r="13"/></g>
+    <circle cx="80" cy="100" r="6"/><circle cx="120" cy="160" r="6"/><circle cx="160" cy="120" r="6"/>
+    <circle cx="340" cy="108" r="6"/><circle cx="372" cy="150" r="6"/><circle cx="400" cy="92" r="6"/>
+    <circle cx="600" cy="102" r="6"/><circle cx="620" cy="138" r="6"/><circle cx="650" cy="70" r="6"/><circle cx="640" cy="188" r="6"/>
+  </g>
+  <text x="662" y="205" class="small" fill="var(--link)">a division (dashed): one parent, two children</text>
+  <text x="215" y="82" class="small" fill="var(--link)">link = "same cell, next frame"</text>
+</svg>
+<figcaption><b>The whole task in one picture.</b> Every green dot is a nucleus centre the pipeline must find; every magenta line is a parent-to-child link it must draw. The competition scores the links, not the dots. Unlike the first edition of this pipeline, this one does predict divisions (the dashed link): the solver may give a parent two children, and a later repair pass adds a few more where the geometry is unambiguous.</figcaption>
+</figure>
+
+<nav class="map" aria-label="Pipeline stages">
+  <p class="eyebrow">The pipeline, left to right</p>
+  <ol>
+    <li><a href="#s0"><small>Stage 0</small>The data and the goal</a></li>
+    <li><a href="#s1"><small>Stage 1</small>Prepare each frame</a></li>
+    <li><a href="#s2"><small>Stage 2</small>Detector: temporal U-Net</a></li>
+    <li><a href="#s3"><small>Stage 3</small>Peaks, 8 views, 2 seeds</a></li>
+    <li><a href="#s4"><small>Stage 4</small>Score links: node transformer</a></li>
+    <li><a href="#s5"><small>Stage 5</small>Select links: the ILP</a></li>
+    <li><a href="#s6"><small>Stage 6</small>Repair the graph</a></li>
+    <li><a href="#s7"><small>Stage 7</small>Write and score</a></li>
+    <li><a href="#s8"><small>Training</small>The 400-epoch recipe</a></li>
+    <li><a href="#diff"><small>Changes</small>First edition vs. this one</a></li>
+  </ol>
+</nav>
+
+<figure style="margin-top:18px">
+<svg viewBox="0 0 980 200" role="img" aria-label="Eight boxes left to right: raw video, prepare frames, temporal U-Net run as two seeds, find peaks with test-time augmentation, node transformer edge scorer, integer linear program, nine post-processing passes, output graph. Arrows between them are labelled with the shape of the data at each hop.">
+  <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+  <g font-size="12.5" text-anchor="middle">
+    <g fill="var(--surface)" stroke="currentColor" stroke-width="1.2">
+      <rect x="6" y="56" width="108" height="56" rx="8"/>
+      <rect x="128" y="56" width="108" height="56" rx="8"/>
+      <rect x="244" y="50" width="108" height="56" rx="8" stroke="var(--attn)" stroke-width="1.4"/>
+      <rect x="250" y="56" width="108" height="56" rx="8" stroke="var(--cell)" stroke-width="2"/>
+      <rect x="372" y="56" width="108" height="56" rx="8" stroke="var(--cell)" stroke-width="2"/>
+      <rect x="494" y="56" width="108" height="56" rx="8" stroke="var(--link)" stroke-width="2"/>
+      <rect x="616" y="56" width="108" height="56" rx="8" stroke="var(--link)" stroke-width="2"/>
+      <rect x="738" y="56" width="108" height="56" rx="8" stroke="var(--warn)" stroke-width="2"/>
+      <rect x="860" y="56" width="112" height="56" rx="8"/>
+    </g>
+    <text x="60" y="80">Raw video</text><text x="60" y="97" class="mono muted">.zarr</text>
+    <text x="182" y="80">Prepare frames</text><text x="182" y="97" class="mono muted">preprocess.py</text>
+    <text x="304" y="80">Temporal U-Net</text><text x="304" y="97" class="mono muted">× 2 seeds</text>
+    <text x="426" y="80">Find peaks</text><text x="426" y="97" class="mono muted">8-view TTA</text>
+    <text x="548" y="80">Score links</text><text x="548" y="97" class="mono muted">node transformer</text>
+    <text x="670" y="80">Select links</text><text x="670" y="97" class="mono muted">ILP (SCIP)</text>
+    <text x="792" y="80">Repair graph</text><text x="792" y="97" class="mono muted">9 passes</text>
+    <text x="916" y="80">Tracking graph</text><text x="916" y="97" class="mono muted">.geff → CSV</text>
+    <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah2)">
+      <line x1="114" y1="84" x2="126" y2="84"/><line x1="236" y1="84" x2="248" y2="84"/><line x1="358" y1="84" x2="370" y2="84"/>
+      <line x1="480" y1="84" x2="492" y2="84"/><line x1="602" y1="84" x2="614" y2="84"/><line x1="724" y1="84" x2="736" y2="84"/><line x1="846" y1="84" x2="858" y2="84"/>
+    </g>
+    <g class="mono muted" font-size="10.5">
+      <text x="121" y="30">T × 64 × 256 × 256</text><text x="121" y="42">uint16</text>
+      <text x="243" y="30">64 × 64 × 64 grid</text><text x="243" y="42">≥ 0, per-video scale</text>
+      <text x="365" y="30">32-ch features +</text><text x="365" y="42">P(centre) logits</text>
+      <text x="487" y="30">points (t, z, y, x)</text><text x="487" y="42">+ features at each</text>
+      <text x="609" y="30">p(parent | child)</text><text x="609" y="42">> 0.48 candidates</text>
+      <text x="731" y="30">≤ 1 parent,</text><text x="731" y="42">≤ 2 children</text>
+      <text x="853" y="30">relinked, gaps</text><text x="853" y="42">closed, smoothed</text>
+    </g>
+    <text x="304" y="136" class="small muted">learned · per frame pair</text>
+    <text x="548" y="136" class="small muted">learned · per frame pair</text>
+    <text x="792" y="136" class="small muted">rules + DeepCenter gate</text>
+    <text x="182" y="136" class="small muted">fixed rules</text><text x="426" y="136" class="small muted">fixed rules</text><text x="670" y="136" class="small muted">exact optimisation</text>
+    <text x="490" y="166" class="small muted">green = detector network (run twice: two training seeds) · magenta = the linking stages · amber = repairs · blue outline = the second seed</text>
+    <text x="490" y="184" class="small muted">One 100-frame video takes about 35 seconds on one L40S GPU, most of it in the two networks.</text>
+  </g>
+</svg>
+<figcaption><b>The map.</b> Three boxes hold learned weights: the temporal U-Net (two copies trained from different seeds), the node transformer that judges links, and a small DeepCenter network used only as a yes/no gate inside the repair stage. The ILP is exact optimisation, not learning. Everything else is deterministic code. The labels above the arrows are the shape of the data at that hop.</figcaption>
+</figure>
+
+<!-- ============ STAGE 0 ============ -->
+<section class="stage" id="s0">
+  <div class="stage-head"><p class="eyebrow">Stage 0</p><h2>The data and the goal</h2></div>
+  <p class="plain">Each training video is a 3D movie of a growing embryo whose nuclei glow. Scientists have hand-marked a <em>sample</em> of nuclei and drawn the links between them. The pipeline has to mark all of them and draw all the links. It is graded on how many of the hand-drawn links it reproduces within a 7&nbsp;micrometre tolerance.</p>
+  <div class="stats">
+    <div class="stat"><span class="n">199</span><span class="l">training videos, each 40 to 100 frames of about 64 × 256 × 256 voxels</span></div>
+    <div class="stat"><span class="n">133,318</span><span class="l">hand-annotated nuclei across all videos (a sparse sample, not every cell)</span></div>
+    <div class="stat"><span class="n">128,883</span><span class="l">annotated parent → child links, of which only 151 are divisions</span></div>
+    <div class="stat"><span class="n">7 µm</span><span class="l">how close a predicted nucleus must be to a hand-marked one to count as the same cell</span></div>
+  </div>
+  <div class="deep">
+    <div><h3>Voxels are not cubes, and units matter</h3>
+      <ul>
+        <li>A raw voxel measures <span class="mono">0.406 × 0.406 µm</span> in y and x but <span class="mono">1.625 µm</span> in z: the microscope slices are four times coarser than the pixels within a slice.</li>
+        <li>Three coordinate systems live in the code: raw voxels <span class="mono">(z, y, x)</span> on disk and in the submission; the isotropic model grid the networks see; and micrometres, where every distance rule in the repair stage is written. The node transformer is the exception: it sees displacements in raw voxels divided by 100, because that is how the public weights were trained.</li>
+        <li>Ground truth is sparse. Roughly 98% of the links the pipeline predicts touch a cell nobody annotated, and the metric simply ignores those. Over-linking is nearly invisible locally; missing an annotated link is not.</li>
+        <li><b>Only two embryos.</b> Names are <span class="mono">{embryo}_{field of view}</span>, and every training video comes from embryo <span class="mono">44b6</span> (71 videos) or <span class="mono">6bba</span> (128). The hidden test videos are from <em>other</em> embryos. Every checkpoint scored so far does markedly worse on the crowded 44b6, and the gap is mostly wrong links between close neighbours.</li>
+        <li><b>The public weights saw every training video.</b> The shipped checkpoints were trained on all 199 videos, so any number they produce on our 20-video held-out split is a training-set number. Honest held-out numbers will come from the two seeds now training on 179 videos.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>Shapes and scales</dt></div>
+      <div><dt>raw voxel size (z, y, x)</dt><dd>1.625 × 0.406 × 0.406 µm</dd></div>
+      <div><dt>frames per video</dt><dd>40 – 100</dd></div>
+      <div><dt>embryos in training data</dt><dd>2 (44b6, 6bba)</dd></div>
+      <div><dt>held-out split</dt><dd>5 × 44b6 + 15 × 6bba</dd></div>
+      <div><dt>competition test videos</dt><dd>4 (all also in train)</dd></div>
+      <div><dt>score</dt><dd>edge Jaccard + 0.1 × division Jaccard</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ STAGE 1 ============ -->
+<section class="stage" id="s1">
+  <div class="stage-head"><p class="eyebrow">Stage 1</p><h2>Prepare each frame</h2></div>
+  <p class="plain">Every video is re-scaled once, using two brightness levels the dataset already stores for it, so that its dim end lands at 0 and its bright end near 1. Then each frame is shrunk four times in y and x by simply keeping every fourth voxel, so each remaining voxel is a cube. Nothing is averaged and nothing is clipped at the top; a very bright nucleus stays brighter than 1.</p>
+  <figure>
+  <svg viewBox="0 0 760 236" role="img" aria-label="Left: an intensity range shifted and scaled so the video's 0.1th quantile maps to 0 and its 99.9th quantile maps to 1, with negatives clamped to zero and values above 1 left alone. Right: a 4 by 4 block of flat voxels of which only the top-left voxel is kept, producing one cubic voxel of 1.625 micrometres per side.">
+    <defs><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+    <text x="20" y="28" font-weight="700">1 · Normalise brightness (per video, from the zarr attributes)</text>
+    <rect x="20" y="60" width="300" height="18" rx="3" fill="var(--line-soft)" stroke="currentColor"/>
+    <rect x="44" y="60" width="216" height="18" fill="var(--cell)" opacity="0.35"/>
+    <rect x="260" y="60" width="60" height="18" fill="var(--cell)" opacity="0.15"/>
+    <text x="20" y="52" class="small muted">raw uint16 intensities; quantiles were computed once over the whole video</text>
+    <line x1="44" y1="56" x2="44" y2="90" stroke="currentColor"/><text x="44" y="103" text-anchor="middle" class="mono">q 0.001</text>
+    <line x1="260" y1="56" x2="260" y2="90" stroke="currentColor"/><text x="260" y="103" text-anchor="middle" class="mono">q 0.999</text>
+    <line x1="44" y1="108" x2="60" y2="140" stroke="currentColor" marker-end="url(#ah3)"/>
+    <line x1="260" y1="108" x2="240" y2="140" stroke="currentColor" marker-end="url(#ah3)"/>
+    <rect x="60" y="145" width="180" height="18" rx="3" fill="var(--cell)" opacity="0.6"/>
+    <rect x="240" y="145" width="60" height="18" rx="3" fill="var(--cell)" opacity="0.25"/>
+    <text x="60" y="180" text-anchor="middle" class="mono">0</text><text x="240" y="180" text-anchor="middle" class="mono">1</text><text x="300" y="180" text-anchor="middle" class="mono muted">> 1 kept</text>
+    <text x="150" y="200" text-anchor="middle" class="small muted">below q0.001 → clamped to 0 · above q0.999 → left as is (no upper clip)</text>
+    <text x="400" y="28" font-weight="700">2 · Decimate 4 × 4 in y, x (z untouched)</text>
+    <g stroke="currentColor" stroke-width="0.8">
+      <g fill="var(--line-soft)">
+        <rect x="400" y="60" width="18" height="18" fill="var(--cell)" opacity="0.6"/><rect x="418" y="60" width="18" height="18"/><rect x="436" y="60" width="18" height="18"/><rect x="454" y="60" width="18" height="18"/>
+        <rect x="400" y="78" width="18" height="18"/><rect x="418" y="78" width="18" height="18"/><rect x="436" y="78" width="18" height="18"/><rect x="454" y="78" width="18" height="18"/>
+        <rect x="400" y="96" width="18" height="18"/><rect x="418" y="96" width="18" height="18"/><rect x="436" y="96" width="18" height="18"/><rect x="454" y="96" width="18" height="18"/>
+        <rect x="400" y="114" width="18" height="18"/><rect x="418" y="114" width="18" height="18"/><rect x="436" y="114" width="18" height="18"/><rect x="454" y="114" width="18" height="18"/>
+      </g>
+    </g>
+    <text x="436" y="150" text-anchor="middle" class="small muted">16 flat voxels, 0.406 µm wide</text>
+    <text x="436" y="164" text-anchor="middle" class="small muted">keep one, discard fifteen</text>
+    <line x1="485" y1="96" x2="530" y2="96" stroke="currentColor" marker-end="url(#ah3)"/>
+    <text x="507" y="88" text-anchor="middle" class="small">[::4, ::4]</text>
+    <g stroke="currentColor" stroke-width="1">
+      <path d="M545 70 l22 -14 h58 v58 l-22 14 h-58z" fill="var(--cell-soft)" opacity="0.7"/>
+      <rect x="545" y="70" width="58" height="58" fill="var(--cell)" opacity="0.5"/>
+      <path d="M603 70 l22 -14 v58 l-22 14z" fill="var(--cell)" opacity="0.3"/>
+    </g>
+    <text x="586" y="150" text-anchor="middle" class="small muted">one cubic voxel</text>
+    <text x="586" y="164" text-anchor="middle" class="mono">1.625 µm per side</text>
+    <text x="400" y="200" class="small muted">Strided decimation, not averaging: the grid voxel is the raw voxel at</text>
+    <text x="400" y="214" class="small muted">(z, 4j, 4k), so grid → raw is simply "multiply y and x by 4".</text>
+    <text x="20" y="228" class="small muted">Result per frame: 64 × 64 × 64 floats ≥ 0. The training cache stores the decimated uint16 and normalises on read, so cache and zarr are interchangeable.</text>
+  </svg>
+  <figcaption><b>Two fixed operations, both copied from the public code rather than chosen here.</b> Per-video quantiles (not per-frame percentiles) keep brightness consistent across a video; strided decimation (not mean pooling) means a detection at grid index j is the raw voxel 4j, which is exactly how the output coordinates are written. Both the training loop and the predictor go through this one function.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>Why this is the only path from disk to network</h3>
+      <ul>
+        <li><code>prepare_frame()</code> is called by both the training sampler and the predictor. If normalisation ever differed between them, the detection threshold in Stage 3 would silently stop meaning what it meant during training.</li>
+        <li>The quantiles come from the zarr root attributes the competition ships (<span class="mono">image_statistics.quantiles</span>). A volume without them raises rather than falling back to a guess.</li>
+        <li>Zarr volumes are read frame by frame as raw blosc2 chunks, because Kaggle submission notebooks run without internet and without a full array library.</li>
+        <li>The decimated uint16 cache (about 10 GB for all videos) is purely a speed trick for training. Inference reads the zarr directly.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>Config</dt></div>
+      <div><dt>normalisation quantiles</dt><dd>0.001, 0.999 (per video)</dd></div>
+      <div><dt>clamp</dt><dd>at 0 only</dd></div>
+      <div><dt>DOWNSAMPLE (z, y, x)</dt><dd>(1, 4, 4), strided</dd></div>
+      <div><dt>grid spacing</dt><dd>1.625 µm isotropic</dd></div>
+      <div><dt>grid per frame</dt><dd>64 × 64 × 64</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ STAGE 2 ============ -->
+<section class="stage" id="s2">
+  <div class="stage-head"><p class="eyebrow">Stage 2</p><h2>Detector: a temporal U-Net that looks at two frames</h2></div>
+  <p class="plain">A neural network looks at the current frame and the next one together. It squeezes each image down to see the big picture, lets every spot in one frame consult the same spot in the other frame, then expands back up. It produces two things per frame: a probability that a cell centre sits at each voxel, and a 32-number description of every voxel that the link scorer will reuse in Stage 4. The same network is run twice with two independently trained sets of weights.</p>
+  <figure>
+  <svg viewBox="0 0 960 430" role="img" aria-label="A U-shaped network. Two input frames enter at the left and pass through three encoder stages of 32, 64 and 128 channels, drawn as paired blocks because both frames share the same weights. Blue attention bridges connect the two frames' blocks at the second and third stages. A decoder on the right expands both frames back to full size with dashed skip connections, ending in a 32-channel feature map per frame and a one-channel centre probability map.">
+    <defs><marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+      <marker id="ah4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--attn)"/></marker></defs>
+    <g stroke="currentColor" stroke-width="1" fill="var(--line-soft)">
+      <rect x="20" y="48" width="56" height="56" rx="4" fill="var(--cell-soft)"/><rect x="20" y="118" width="56" height="56" rx="4" fill="var(--cell-soft)"/>
+    </g>
+    <text x="48" y="40" text-anchor="middle" class="small">frame t</text>
+    <text x="48" y="190" text-anchor="middle" class="small">frame t + 1</text>
+    <text x="48" y="204" text-anchor="middle" class="mono muted small">64³ each</text>
+    <line x1="80" y1="76" x2="108" y2="90" stroke="currentColor" marker-end="url(#ah4)"/>
+    <line x1="80" y1="146" x2="108" y2="120" stroke="currentColor" marker-end="url(#ah4)"/>
+    <g stroke="currentColor" stroke-width="1">
+      <rect x="112" y="60" width="64" height="120" rx="4" fill="var(--line-soft)"/><rect x="122" y="70" width="64" height="120" rx="4" fill="var(--cell-soft)"/>
+      <rect x="232" y="150" width="64" height="80" rx="4" fill="var(--line-soft)"/><rect x="242" y="160" width="64" height="80" rx="4" fill="var(--cell-soft)"/>
+      <rect x="352" y="230" width="64" height="52" rx="4" fill="var(--line-soft)"/><rect x="362" y="240" width="64" height="52" rx="4" fill="var(--cell-soft)"/>
+      <rect x="502" y="150" width="64" height="80" rx="4" fill="var(--line-soft)"/><rect x="512" y="160" width="64" height="80" rx="4" fill="var(--cell-soft)"/>
+      <rect x="622" y="60" width="64" height="120" rx="4" fill="var(--line-soft)"/><rect x="632" y="70" width="64" height="120" rx="4" fill="var(--cell-soft)"/>
+    </g>
+    <g class="mono small" text-anchor="middle"><text x="154" y="210">32 ch · 64³</text><text x="274" y="260">64 ch · 32³</text><text x="394" y="312">128 ch · 16³ (deepest)</text><text x="544" y="260">64 ch · 32³</text><text x="664" y="210">32 ch · 64³</text></g>
+    <g class="small muted" text-anchor="middle"><text x="154" y="224">conv → BatchNorm → ReLU, ×2</text><text x="274" y="274">then attention across time</text></g>
+    <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah4)">
+      <line x1="188" y1="150" x2="238" y2="172"/><line x1="308" y1="232" x2="358" y2="254"/>
+      <line x1="428" y1="254" x2="508" y2="218"/><line x1="578" y1="160" x2="628" y2="128"/>
+    </g>
+    <g class="small muted" text-anchor="middle"><text x="203" y="150">max-pool ÷2</text><text x="468" y="222">trilinear ×2</text></g>
+    <g stroke="var(--cell)" stroke-width="1.4" stroke-dasharray="5 4" fill="none" marker-end="url(#ah4)">
+      <path d="M186 90 H 628"/><path d="M306 180 H 508"/>
+    </g>
+    <text x="407" y="82" text-anchor="middle" class="small" fill="var(--cell)">skip connections: concatenated, for both frames</text>
+    <g stroke="var(--attn)" stroke-width="2.2" marker-start="url(#ah4b)" marker-end="url(#ah4b)">
+      <line x1="252" y1="150" x2="286" y2="240"/><line x1="372" y1="230" x2="406" y2="292"/>
+    </g>
+    <g fill="var(--attn)" class="small"><text x="236" y="140" text-anchor="end">attention</text><text x="356" y="222" text-anchor="end">attention</text></g>
+    <text x="154" y="52" text-anchor="middle" class="small muted">no attention here (memory)</text>
+    <!-- outputs -->
+    <path d="M696 100 H 730" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah4)"/>
+    <g stroke="currentColor" stroke-width="1"><rect x="736" y="60" width="64" height="120" rx="4" fill="var(--cell-soft)"/><rect x="746" y="70" width="64" height="120" rx="4" fill="var(--cell-soft)"/></g>
+    <text x="778" y="52" text-anchor="middle" class="small">1×1×1 conv head</text>
+    <text x="778" y="210" text-anchor="middle" class="mono small">32 ch · 64³ · per frame</text>
+    <text x="778" y="224" text-anchor="middle" class="small muted">features → Stage 4</text>
+    <path d="M814 130 H 856" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah4)"/>
+    <text x="835" y="122" text-anchor="middle" class="small">1×1×1</text>
+    <rect x="862" y="80" width="56" height="56" rx="4" fill="var(--cell)" opacity="0.55" stroke="currentColor"/>
+    <rect x="872" y="90" width="56" height="56" rx="4" fill="var(--cell)" opacity="0.55" stroke="currentColor"/>
+    <text x="895" y="164" text-anchor="middle" class="small">P(centre) logits</text><text x="895" y="178" text-anchor="middle" class="mono muted small">1 ch · 64³ · per frame</text>
+    <text x="895" y="192" text-anchor="middle" class="small muted">→ Stage 3</text>
+    <g class="small">
+      <rect x="20" y="340" width="14" height="14" fill="var(--line-soft)" stroke="currentColor"/><text x="40" y="351">frame t + 1 (same weights, processed in the same batch)</text>
+      <rect x="20" y="362" width="14" height="14" fill="var(--cell-soft)" stroke="currentColor"/><text x="40" y="373">frame t · both frames are decoded, both get features and logits</text>
+      <line x1="420" y1="347" x2="450" y2="347" stroke="var(--attn)" stroke-width="2.2"/><text x="458" y="351" fill="var(--attn)">4-head self-attention over the 2 time steps, separately at every voxel (LayerNorm, residual)</text>
+      <line x1="420" y1="369" x2="450" y2="369" stroke="var(--cell)" stroke-width="1.4" stroke-dasharray="5 4"/><text x="458" y="373">skip connection</text>
+      <text x="20" y="400" class="muted">The attention flattens batch × 32³ ≈ 262 k rows into one attention call with sequence length 2. On this cluster's L40S GPUs the fused kernels crash at that</text>
+      <text x="20" y="414" class="muted">size, so the plain math backend is forced; the numbers are the same up to floating-point kernel differences. The reference oracle runs under the same backend.</text>
+    </g>
+  </svg>
+  <figcaption><b>Encode both frames, attend between them, decode both.</b> Each frame goes through identical convolution stages. At the two coarser levels a small attention block lets each location in one frame look at the same location in the other frame and mix in what it sees. The decoder rebuilds both frames to 32 channels; one extra 1×1×1 convolution turns those into a single "is a centre here" logit per voxel. The 32-channel map is also the input to the link scorer, which is why the two networks are trained together.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>Architecture</h3>
+      <ul>
+        <li><b>TemporalUNet3D</b>: three stages of 32, 64 and 128 channels, blocks of <code>Conv3d → BatchNorm → ReLU</code> twice, max-pool down and trilinear upsample up, skip connections by concatenation. Ported verbatim from the public support pack (RoyerLab baseline code).</li>
+        <li><b>Temporal attention</b>: the tensor is reshaped so each spatial location is a 2-token sequence (frame t, frame t + 1), and standard 4-head self-attention runs over those two tokens with a residual add. It is skipped at full resolution, where it would dominate memory and runtime for little gain.</li>
+        <li><b>Two heads on one trunk.</b> The U-Net's 32-channel output is both the detection feature map (through a 1×1×1 convolution to one logit) and the per-node feature source for the node transformer. There is no dropout in the U-Net.</li>
+        <li><b>Two seeds.</b> The primary weights are the pack's <span class="mono">split_0</span> checkpoint (best of 400 epochs by its own validation); the secondary is an independent run with seed 314159, same code and recipe. Both are loaded and run on every window; how their outputs are combined is Stage 3 and Stage 4.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>Config</dt></div>
+      <div><dt>window_size</dt><dd>2 frames</dd></div>
+      <div><dt>unet_layers</dt><dd>(32, 64, 128)</dd></div>
+      <div><dt>unet_out_channels</dt><dd>32</dd></div>
+      <div><dt>attention heads</dt><dd>4, at stages 2 and 3</dd></div>
+      <div><dt>normalisation</dt><dd>BatchNorm3d</dd></div>
+      <div><dt>SDPA backend</dt><dd>MATH (forced)</dd></div>
+      <div><dt>outputs per frame</dt><dd>32 features + 1 logit per voxel</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ STAGE 3 ============ -->
+<section class="stage" id="s3">
+  <div class="stage-head"><p class="eyebrow">Stage 3</p><h2>Find the peaks: eight views, two seeds, one list of points</h2></div>
+  <p class="plain">The network's output is a cloud of probabilities, not a list of cells. To steady that cloud, each frame is shown to the network eight times, rotated and mirrored in the flat plane, and the answers are averaged. The second network's average is then blended in, but only if the blend does not lose too many peaks compared with the first network alone. Finally, a voxel becomes a cell if it is very confident and the highest in its 3×3×3 neighbourhood.</p>
+  <figure>
+  <svg viewBox="0 0 900 300" role="img" aria-label="Flow diagram. The primary model's detection logits are averaged over eight planar views. The secondary model's logits are likewise averaged, then shifted and scaled to match the primary's mean and spread, and blended at 80 percent secondary, 20 percent primary. A retention guard counts peaks in the blend versus the primary alone and falls back to the primary if fewer than 90 percent survive. The result passes through sigmoid greater than 0.965 and a 3 by 3 by 3 max-pool to give the list of detections.">
+    <defs><marker id="ah5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+    <!-- 8 views -->
+    <text x="20" y="22" font-weight="700">1 · Eight planar views (D4 group), z never flipped</text>
+    <g stroke="currentColor" stroke-width="0.9" fill="var(--cell-soft)">
+      <rect x="20" y="36" width="34" height="34" rx="3"/><rect x="62" y="36" width="34" height="34" rx="3"/><rect x="104" y="36" width="34" height="34" rx="3"/><rect x="146" y="36" width="34" height="34" rx="3"/>
+      <rect x="20" y="78" width="34" height="34" rx="3"/><rect x="62" y="78" width="34" height="34" rx="3"/><rect x="104" y="78" width="34" height="34" rx="3"/><rect x="146" y="78" width="34" height="34" rx="3"/>
+    </g>
+    <g fill="var(--cell)">
+      <path d="M27 63 L37 43 L47 63z"/><path d="M89 63 L79 43 L69 63z"/><path d="M111 43 L121 63 L131 43z"/><path d="M173 43 L163 63 L153 43z"/>
+      <path d="M27 85 L47 95 L27 105z"/><path d="M89 85 L69 95 L89 105z"/><path d="M111 105 L131 95 L111 85z"/><path d="M173 105 L153 95 L173 85z"/>
+    </g>
+    <g class="small muted" text-anchor="middle"><text x="37" y="126">id</text><text x="79" y="126">flip x</text><text x="121" y="126">flip y</text><text x="163" y="126">flip xy</text><text x="37" y="140">rot 90</text><text x="79" y="140">rot −90</text><text x="121" y="140">transp.</text><text x="163" y="140">anti-t.</text></g>
+    <line x1="186" y1="77" x2="222" y2="77" stroke="currentColor" marker-end="url(#ah5)"/>
+    <text x="204" y="68" text-anchor="middle" class="small">un-view,</text><text x="204" y="92" text-anchor="middle" class="small">mean</text>
+    <!-- primary / secondary boxes -->
+    <g fill="var(--surface)" stroke="currentColor" stroke-width="1.2">
+      <rect x="228" y="50" width="130" height="54" rx="7" stroke="var(--cell)" stroke-width="2"/>
+      <rect x="228" y="170" width="130" height="54" rx="7" stroke="var(--attn)" stroke-width="2"/>
+    </g>
+    <text x="293" y="72" text-anchor="middle">primary logits</text><text x="293" y="88" text-anchor="middle" class="small muted">mean of 8 views</text>
+    <text x="293" y="192" text-anchor="middle">secondary logits</text><text x="293" y="208" text-anchor="middle" class="small muted">mean of 8 views, seed 314159</text>
+    <!-- moment match -->
+    <line x1="358" y1="197" x2="394" y2="197" stroke="currentColor" marker-end="url(#ah5)"/>
+    <rect x="398" y="170" width="110" height="54" rx="7" fill="var(--attn-soft)" stroke="var(--attn)"/>
+    <text x="453" y="192" text-anchor="middle">moment match</text><text x="453" y="208" text-anchor="middle" class="small muted">to primary mean, std</text>
+    <!-- blend -->
+    <path d="M358 77 C 400 77, 420 110, 540 118" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah5)"/>
+    <path d="M508 197 C 520 197, 520 140, 540 132" fill="none" stroke="var(--attn)" stroke-width="1.2" marker-end="url(#ah5)"/>
+    <text x="440" y="100" text-anchor="middle" class="mono small">× 0.20</text>
+    <text x="540" y="160" text-anchor="middle" class="mono small" fill="var(--attn)">× 0.80</text>
+    <rect x="546" y="98" width="92" height="54" rx="7" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/>
+    <text x="592" y="120" text-anchor="middle">blend</text><text x="592" y="136" text-anchor="middle" class="small muted">per frame</text>
+    <!-- retention guard -->
+    <line x1="638" y1="125" x2="674" y2="125" stroke="currentColor" marker-end="url(#ah5)"/>
+    <rect x="678" y="86" width="118" height="78" rx="7" fill="var(--warn-soft)" stroke="var(--warn)" stroke-width="1.4"/>
+    <text x="737" y="108" text-anchor="middle">retention guard</text>
+    <text x="737" y="124" text-anchor="middle" class="small">peaks(blend) / peaks(primary)</text>
+    <text x="737" y="140" text-anchor="middle" class="mono small">< 0.90 → use primary</text>
+    <text x="737" y="154" text-anchor="middle" class="mono small">else → use blend</text>
+    <path d="M293 50 C 293 20, 737 20, 737 84" fill="none" stroke="var(--cell)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#ah5)"/>
+    <text x="520" y="20" text-anchor="middle" class="small" fill="var(--cell)">primary kept as fallback</text>
+    <!-- peak picking -->
+    <line x1="796" y1="125" x2="836" y2="125" stroke="currentColor" marker-end="url(#ah5)"/>
+    <rect x="840" y="86" width="52" height="78" rx="7" fill="var(--cell)" opacity="0.55" stroke="currentColor"/>
+    <text x="866" y="120" text-anchor="middle" class="small" fill="#fff">logits</text><text x="866" y="134" text-anchor="middle" class="small" fill="#fff">final</text>
+    <text x="20" y="262" font-weight="700">2 · Peak picking</text>
+    <text x="20" y="282" class="small">A voxel is a detection if <tspan class="mono">sigmoid(logit) > 0.965</tspan> and the logit equals the maximum of its 3×3×3 neighbourhood (one max-pool, stride 1).</text>
+    <text x="20" y="296" class="small muted">Coordinates are written as grid index × (1, 4, 4) in raw voxels. Frames appear in two windows (t−1, t) and (t, t+1); the first pass wins, so each frame is detected exactly once.</text>
+    <text x="500" y="262" class="small muted">8 of 20 held-out videos tripped the guard on at least one frame, all small or short volumes.</text>
+    <text x="500" y="278" class="small muted">The guard exists because the blend occasionally erases peaks the primary alone would keep.</text>
+  </svg>
+  <figcaption><b>Average, blend, guard, threshold.</b> Test-time augmentation over the eight symmetries of the y/x plane is a free ensemble of one network with itself; the second seed is a real ensemble of two networks. The blend is 80% secondary, 20% primary after shifting the secondary's logits onto the primary's mean and spread, and it is used only when it keeps at least 90% of the primary's peak count in that frame. The 3×3×3 suppression window comes from a 3 µm setting on the 1.625 µm grid; the <span class="mono">config.json</span> value of 5 µm is not read by inference.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>Details that matter</h3>
+      <ul>
+        <li>Averaging is done on <em>logits</em>, not probabilities. The eight views are identity, three flips, two 90° rotations, transpose and anti-transpose; z is never touched because a z-flip is not a symmetry of a 1.625 µm-sliced stack.</li>
+        <li>The same eight views also average the 32-channel <em>feature map</em> (Stage 4's input) for the primary model, and are blended at 75% into the secondary's feature map. This "edge-feature TTA" is one of six runtime patches the public notebook applies on top of the pack's script.</li>
+        <li>Moment matching shifts and rescales the secondary's logits to the primary's mean and standard deviation, with the scale ratio clamped between 0.5 and 2, so two networks with differently calibrated logits can be averaged meaningfully.</li>
+        <li>On the held-out set the combined detector finds about 98% of annotated nuclei within 7 µm, and dual seed is worth about +0.010 in score over the primary alone.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>PredictConfig</dt></div>
+      <div><dt>det_threshold</dt><dd>0.965</dd></div>
+      <div><dt>pool_kernel_um</dt><dd>3.0 → (3, 3, 3)</dd></div>
+      <div><dt>det_tta_views</dt><dd>d4 (8 views)</dd></div>
+      <div><dt>secondary_detection_weight</dt><dd>0.80</dd></div>
+      <div><dt>min_candidate_retention</dt><dd>0.90</dd></div>
+      <div><dt>edge_feature_tta</dt><dd>on (primary: replace)</dd></div>
+      <div><dt>secondary_edge_feature_tta_weight</dt><dd>0.75</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ STAGE 4 ============ -->
+<section class="stage" id="s4">
+  <div class="stage-head"><p class="eyebrow">Stage 4</p><h2>Score links with a node transformer</h2></div>
+  <p class="plain">Every detected cell in frame t and every detected cell in frame t + 1 is described by the detector's 32 numbers at its position plus a fixed encoding of where it is. A small transformer lets the cells in one frame look at all the cells in the other frame, four times back and forth, so each cell's description absorbs its surroundings. Then every possible pair is scored, and for each cell in frame t + 1 the scores over its possible parents are turned into probabilities that sum to one. The same is done in reverse time and with the second network, and the three answers are fused.</p>
+  <figure>
+  <svg viewBox="0 0 960 330" role="img" aria-label="Left: for each detection, 32 U-Net features and a 32-dimensional sinusoidal position encoding are concatenated and projected to 128. Middle: four cross-attention blocks alternate, frame t attending to frame t plus 1 and back. Right: a pair MLP scores every source-target pair from the two hidden vectors and their displacement, giving a logit matrix; a softmax down each column turns it into parent probabilities per child. Below: forward and reverse-time probabilities are fused by a weighted harmonic mean, the secondary model's logits are mixed in where the primary is unsure, and pairs above 0.48 become candidates.">
+    <defs><marker id="ah6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+      <marker id="ah6b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--attn)"/></marker></defs>
+    <!-- per-node features -->
+    <text x="20" y="22" font-weight="700">1 · Describe each detection</text>
+    <g stroke="currentColor" stroke-width="0.8">
+      <rect x="20" y="40" width="70" height="22" rx="3" fill="var(--cell-soft)"/><rect x="92" y="40" width="70" height="22" rx="3" fill="var(--line-soft)"/>
+      <rect x="20" y="110" width="70" height="22" rx="3" fill="var(--cell-soft)"/><rect x="92" y="110" width="70" height="22" rx="3" fill="var(--line-soft)"/>
+    </g>
+    <g class="mono small" text-anchor="middle"><text x="55" y="55">32 features</text><text x="127" y="55">32 position</text><text x="55" y="125">32 features</text><text x="127" y="125">32 position</text></g>
+    <text x="91" y="78" text-anchor="middle" class="small muted">frame t node: U-Net map gathered at its integer</text><text x="91" y="90" text-anchor="middle" class="small muted">grid voxel + sin/cos of (t, z, y, x) / shape</text>
+    <text x="91" y="148" text-anchor="middle" class="small muted">frame t + 1 node, likewise</text>
+    <line x1="166" y1="51" x2="196" y2="51" stroke="currentColor" marker-end="url(#ah6)"/><line x1="166" y1="121" x2="196" y2="121" stroke="currentColor" marker-end="url(#ah6)"/>
+    <text x="181" y="44" text-anchor="middle" class="small">Linear</text>
+    <g stroke="currentColor" stroke-width="1"><rect x="200" y="36" width="60" height="30" rx="4" fill="var(--surface)"/><rect x="200" y="106" width="60" height="30" rx="4" fill="var(--surface)"/></g>
+    <g class="mono" text-anchor="middle"><text x="230" y="56">128</text><text x="230" y="126">128</text></g>
+    <!-- cross attention blocks -->
+    <text x="300" y="22" font-weight="700">2 · Four cross-attention blocks</text>
+    <g fill="var(--attn-soft)" stroke="var(--attn)" stroke-width="1.4">
+      <rect x="300" y="36" width="52" height="30" rx="4"/><rect x="362" y="36" width="52" height="30" rx="4"/><rect x="424" y="36" width="52" height="30" rx="4"/><rect x="486" y="36" width="52" height="30" rx="4"/>
+      <rect x="300" y="106" width="52" height="30" rx="4"/><rect x="362" y="106" width="52" height="30" rx="4"/><rect x="424" y="106" width="52" height="30" rx="4"/><rect x="486" y="106" width="52" height="30" rx="4"/>
+    </g>
+    <g class="mono small" text-anchor="middle" fill="var(--attn)"><text x="326" y="55">t → t+1</text><text x="388" y="55">t → t+1</text><text x="450" y="55">t → t+1</text><text x="512" y="55">t → t+1</text><text x="326" y="125">t+1 → t</text><text x="388" y="125">t+1 → t</text><text x="450" y="125">t+1 → t</text><text x="512" y="125">t+1 → t</text></g>
+    <g stroke="var(--attn)" stroke-width="1.4" marker-end="url(#ah6b)">
+      <line x1="326" y1="66" x2="326" y2="104"/><line x1="340" y1="104" x2="366" y2="68"/>
+      <line x1="388" y1="66" x2="388" y2="104"/><line x1="402" y1="104" x2="428" y2="68"/>
+      <line x1="450" y1="66" x2="450" y2="104"/><line x1="464" y1="104" x2="490" y2="68"/>
+      <line x1="512" y1="66" x2="512" y2="104"/>
+    </g>
+    <line x1="262" y1="51" x2="298" y2="51" stroke="currentColor" marker-end="url(#ah6)"/><line x1="262" y1="121" x2="298" y2="121" stroke="currentColor" marker-end="url(#ah6)"/>
+    <text x="419" y="160" text-anchor="middle" class="small muted">each block: LayerNorm → 4-head cross-attention → residual → MLP (×4 wide, GELU) → residual</text>
+    <text x="419" y="174" text-anchor="middle" class="small muted">frame t's nodes query frame t+1's, then frame t+1's query the updated frame t's; repeated 4 times</text>
+    <!-- pair mlp -->
+    <text x="580" y="22" font-weight="700">3 · Score every pair</text>
+    <line x1="540" y1="51" x2="592" y2="76" stroke="currentColor" marker-end="url(#ah6)"/><line x1="540" y1="121" x2="592" y2="96" stroke="currentColor" marker-end="url(#ah6)"/>
+    <rect x="596" y="60" width="120" height="52" rx="5" fill="var(--link-soft)" stroke="var(--link)" stroke-width="1.4"/>
+    <text x="656" y="80" text-anchor="middle" class="mono small">[h_src, h_tgt, Δzyx/100]</text>
+    <text x="656" y="96" text-anchor="middle" class="small">MLP 259 → 128 → 64 → 1</text>
+    <text x="656" y="128" text-anchor="middle" class="small muted">Δ in raw voxels; no distance gate:</text><text x="656" y="140" text-anchor="middle" class="small muted">every pair in the frame is scored</text>
+    <line x1="716" y1="86" x2="748" y2="86" stroke="currentColor" marker-end="url(#ah6)"/>
+    <!-- logit matrix with column softmax -->
+    <g stroke="currentColor" stroke-width="0.7">
+      <rect x="752" y="40" width="26" height="26" fill="var(--link)" opacity="0.85"/><rect x="778" y="40" width="26" height="26" fill="var(--link)" opacity="0.15"/><rect x="804" y="40" width="26" height="26" fill="var(--link)" opacity="0.1"/><rect x="830" y="40" width="26" height="26" fill="var(--link)" opacity="0.05"/>
+      <rect x="752" y="66" width="26" height="26" fill="var(--link)" opacity="0.1"/><rect x="778" y="66" width="26" height="26" fill="var(--link)" opacity="0.5"/><rect x="804" y="66" width="26" height="26" fill="var(--link)" opacity="0.4"/><rect x="830" y="66" width="26" height="26" fill="var(--link)" opacity="0.05"/>
+      <rect x="752" y="92" width="26" height="26" fill="var(--link)" opacity="0.05"/><rect x="778" y="92" width="26" height="26" fill="var(--link)" opacity="0.35"/><rect x="804" y="92" width="26" height="26" fill="var(--link)" opacity="0.5"/><rect x="830" y="92" width="26" height="26" fill="var(--link)" opacity="0.9"/>
+    </g>
+    <text x="804" y="32" text-anchor="middle" class="small">children (frame t + 1)</text>
+    <text x="744" y="83" text-anchor="end" class="small" transform="rotate(-90 744 83)">parents (t)</text>
+    <path d="M765 124 V 136" stroke="var(--link)" stroke-width="1.4" marker-end="url(#ah6)"/><path d="M791 124 V 136" stroke="var(--link)" stroke-width="1.4" marker-end="url(#ah6)"/><path d="M817 124 V 136" stroke="var(--link)" stroke-width="1.4" marker-end="url(#ah6)"/><path d="M843 124 V 136" stroke="var(--link)" stroke-width="1.4" marker-end="url(#ah6)"/>
+    <text x="804" y="152" text-anchor="middle" class="small" fill="var(--link)">softmax down each column</text>
+    <text x="804" y="166" text-anchor="middle" class="small muted">"which parent is this child's?" sums to 1</text>
+    <text x="804" y="180" text-anchor="middle" class="small muted">a column can be split (e.g. 0.5 / 0.4)</text>
+    <!-- fusion row -->
+    <text x="20" y="214" font-weight="700">4 · Fuse three opinions, then threshold</text>
+    <g fill="var(--surface)" stroke="currentColor" stroke-width="1.2">
+      <rect x="20" y="228" width="200" height="60" rx="7" stroke="var(--link)"/>
+      <rect x="250" y="228" width="230" height="60" rx="7" stroke="var(--link)"/>
+      <rect x="510" y="228" width="230" height="60" rx="7" stroke="var(--attn)"/>
+      <rect x="770" y="228" width="170" height="60" rx="7"/>
+    </g>
+    <text x="120" y="248" text-anchor="middle">forward pass</text><text x="120" y="264" text-anchor="middle" class="small muted">primary, t → t+1</text><text x="120" y="278" text-anchor="middle" class="small muted">features averaged over 8 views</text>
+    <text x="365" y="248" text-anchor="middle">+ reverse-time pass</text><text x="365" y="264" text-anchor="middle" class="small muted">same model asked t+1 → t, transposed</text><text x="365" y="278" text-anchor="middle" class="mono small">harmonic mean, weight 0.15 on reverse</text>
+    <text x="625" y="248" text-anchor="middle">+ secondary model's logits</text><text x="625" y="264" text-anchor="middle" class="small muted">only where primary top-2 margin &lt; 0.35</text><text x="625" y="278" text-anchor="middle" class="mono small">and both agree on the parent · weight ≤ 0.20</text>
+    <text x="855" y="248" text-anchor="middle">candidates</text><text x="855" y="264" text-anchor="middle" class="mono small">softmax prob > 0.48</text><text x="855" y="278" text-anchor="middle" class="small muted">no degree cap yet</text>
+    <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah6)"><line x1="220" y1="258" x2="248" y2="258"/><line x1="480" y1="258" x2="508" y2="258"/><line x1="740" y1="258" x2="768" y2="258"/></g>
+    <text x="480" y="316" text-anchor="middle" class="small muted">Each fusion step re-centres and re-scales its result onto the forward logits' mean and spread (ratio clamped to [0.5, 2]), so the 0.48 threshold keeps its meaning.</text>
+  </svg>
+  <figcaption><b>A transformer over detections, not over voxels.</b> Input per node is 32 learned features plus 32 sinusoidal position numbers, projected to 128. Four alternating cross-attention blocks let each node see the whole other frame. A pair MLP then scores every (parent, child) pair, and a softmax down each child's column makes the scores compete: a child has one parent, so its probabilities sum to one. Three refinements from the public notebook follow: fuse with a reverse-time pass, consult the second seed where the primary is unsure, and keep pairs above 0.48.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>Why softmax over parents, and what the fusions do</h3>
+      <ul>
+        <li><b>Softmax over sources per target</b> encodes the rule "every child has exactly one parent" directly into the probabilities, which is the right prior for cells that do not divide (the vast majority). A parent with two children simply appears strongly in two columns.</li>
+        <li><b>Bidirectional harmonic fusion</b> runs the same transformer with the frames swapped, transposes the result, and combines the two probability tables with a weighted harmonic mean (0.85 forward, 0.15 reverse). A harmonic mean is dragged down by either side being small, so a link both directions like survives and a one-sided link is suppressed.</li>
+        <li><b>Low-margin consensus</b> looks at each child's top two parent probabilities from the primary. If the margin is under 0.35 and the secondary model picks the same top parent, the secondary's (moment-matched) logits are mixed in with weight up to 0.20, scaled by how uncertain the primary was. If they disagree, the secondary is ignored for that child.</li>
+        <li>The displacement fed to the pair MLP is in raw voxels divided by 100, so z and y/x are not on the same physical scale. This is faithful to how the public weights were trained and is not a bug to fix.</li>
+        <li>Held-out association recall is about 98% overall but drops to 92% for nuclei with a neighbour closer than 7 µm; that crowding is where 44b6's remaining errors live.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>Model and PredictConfig</dt></div>
+      <div><dt>node input</dt><dd>32 feat + 32 pos</dd></div>
+      <div><dt>hidden / heads / blocks</dt><dd>128 / 4 / 4</dd></div>
+      <div><dt>pair MLP</dt><dd>259 → 128 → 64 → 1</dd></div>
+      <div><dt>edge_activation</dt><dd>softmax over sources</dd></div>
+      <div><dt>bidirectional_edge_weight</dt><dd>0.15 (harmonic)</dd></div>
+      <div><dt>secondary_edge_weight</dt><dd>0.20</dd></div>
+      <div><dt>secondary_low_margin_max</dt><dd>0.35</dd></div>
+      <div><dt>edge_threshold (dual / single)</dt><dd>0.48 / 0.50</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ STAGE 5 ============ -->
+<section class="stage" id="s5">
+  <div class="stage-head"><p class="eyebrow">Stage 5</p><h2>Select links: an integer linear program</h2></div>
+  <p class="plain">Now every plausible pair has a probability. Rather than grabbing the best pairs one at a time, the pipeline hands the whole video to an exact optimiser. It must give every cell at most one parent and at most two children, and it is charged a price for every cell that vanishes without a child and a smaller price for every division, while being rewarded for every confident link it keeps. It finds the cheapest overall answer for the whole video at once.</p>
+  <figure>
+  <svg viewBox="0 0 900 290" role="img" aria-label="Left: a small candidate graph across three frames with probabilities on the edges. Middle: the ILP's objective, minus the summed probabilities of chosen edges plus 2.0 per track ending and 1.2 per division, subject to in-degree at most one and out-degree at most two. Right: the chosen edges, including a division and a case where a lower-probability edge is preferred to avoid a track ending.">
+    <defs><marker id="ah7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+    <text x="20" y="22" font-weight="700">Candidates (after Stage 4)</text>
+    <g class="small muted" text-anchor="middle"><text x="60" y="48">t</text><text x="170" y="48">t + 1</text><text x="280" y="48">t + 2</text></g>
+    <!-- candidate edges -->
+    <g stroke="var(--link)" stroke-width="1.6" fill="none" opacity="0.5">
+      <line x1="60" y1="80" x2="170" y2="70"/>
+      <line x1="60" y1="80" x2="170" y2="130"/>
+      <line x1="60" y1="170" x2="170" y2="130"/>
+      <line x1="60" y1="170" x2="170" y2="200"/>
+      <line x1="170" y1="70" x2="280" y2="80"/>
+      <line x1="170" y1="130" x2="280" y2="140"/>
+      <line x1="170" y1="200" x2="280" y2="140"/>
+      <line x1="170" y1="200" x2="280" y2="210"/>
+    </g>
+    <g class="mono" font-size="10.5" fill="var(--link)">
+      <text x="112" y="68">.96</text><text x="120" y="112">.62</text><text x="108" y="146">.55</text><text x="112" y="194">.93</text>
+      <text x="224" y="70">.97</text><text x="224" y="130">.58</text><text x="230" y="176">.49</text><text x="224" y="212">.90</text>
+    </g>
+    <g fill="var(--cell)" stroke="currentColor" stroke-width="1">
+      <circle cx="60" cy="80" r="8"/><circle cx="60" cy="170" r="8"/>
+      <circle cx="170" cy="70" r="8"/><circle cx="170" cy="130" r="8"/><circle cx="170" cy="200" r="8"/>
+      <circle cx="280" cy="80" r="8"/><circle cx="280" cy="140" r="8"/><circle cx="280" cy="210" r="8"/>
+    </g>
+    <text x="60" y="240" text-anchor="middle" class="small muted">candidate = softmax prob > 0.48</text>
+    <!-- objective -->
+    <line x1="310" y1="140" x2="346" y2="140" stroke="currentColor" marker-end="url(#ah7)"/>
+    <rect x="352" y="54" width="230" height="172" rx="8" fill="var(--surface)" stroke="var(--link)" stroke-width="2"/>
+    <text x="467" y="78" text-anchor="middle" font-weight="700">minimise, over the whole video</text>
+    <g class="mono" font-size="12">
+      <text x="372" y="106">− 1.0 × Σ prob(chosen edge)</text>
+      <text x="372" y="128">+ 2.0 × #(cell with no child)</text>
+      <text x="372" y="150">+ 1.2 × #(cell with two children)</text>
+      <text x="372" y="172">+ 0.0 × #(cell with no parent)</text>
+    </g>
+    <text x="467" y="200" text-anchor="middle" class="small">subject to: in-degree ≤ 1, out-degree ≤ 2</text>
+    <text x="467" y="216" text-anchor="middle" class="small muted">solved exactly by SCIP via tracksdata / ilpy</text>
+    <!-- result -->
+    <line x1="586" y1="140" x2="622" y2="140" stroke="currentColor" marker-end="url(#ah7)"/>
+    <text x="640" y="22" font-weight="700">Chosen (what the ILP returns)</text>
+    <g class="small muted" text-anchor="middle"><text x="660" y="48">t</text><text x="770" y="48">t + 1</text><text x="880" y="48">t + 2</text></g>
+    <g stroke="var(--link)" stroke-width="3" fill="none">
+      <line x1="660" y1="80" x2="770" y2="70"/>
+      <line x1="660" y1="170" x2="770" y2="130"/>
+      <line x1="660" y1="170" x2="770" y2="200"/>
+      <line x1="770" y1="70" x2="880" y2="80"/>
+      <line x1="770" y1="130" x2="880" y2="140"/>
+      <line x1="770" y1="200" x2="880" y2="210"/>
+    </g>
+    <g stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="3 3" fill="none"><line x1="660" y1="80" x2="770" y2="130"/><line x1="770" y1="200" x2="880" y2="140"/></g>
+    <g fill="var(--cell)" stroke="currentColor" stroke-width="1">
+      <circle cx="660" cy="80" r="8"/><circle cx="660" cy="170" r="8"/>
+      <circle cx="770" cy="70" r="8"/><circle cx="770" cy="130" r="8"/><circle cx="770" cy="200" r="8"/>
+      <circle cx="880" cy="80" r="8"/><circle cx="880" cy="140" r="8"/><circle cx="880" cy="210" r="8"/>
+    </g>
+    <text x="700" y="160" class="small" fill="var(--link)">division kept: .55 + .93 − 1.2</text>
+    <text x="700" y="174" class="small" fill="var(--link)">beats paying 2.0 for an orphan</text>
+    <text x="660" y="240" text-anchor="middle" class="small muted">dropped: two weaker edges</text>
+    <text x="20" y="272" class="small muted">The ILP's node set and each kept edge's probability travel on to Stage 6. Its actual edge choices are then replaced by the motion relink, so what it contributes is which cells survive and the probability table.</text>
+  </svg>
+  <figcaption><b>Global, exact, and priced.</b> The objective rewards each kept link by its probability, charges 2.0 whenever a track ends and 1.2 whenever a cell divides, and charges nothing for a track starting. With those prices a division is worth taking only when both child links are confident, and a mediocre link is worth keeping if the alternative is an ending. Turning the ILP off and linking greedily instead (one parent, up to two children, highest probability first) costs about 0.03 on the held-out split.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>What the solver is really contributing</h3>
+      <ul>
+        <li>The graph is built in <code>tracksdata</code> with the candidate edges and their <span class="mono">edge_prob</span>; the solver is <span class="mono">ILPSolver</span> with the four weights at right, backed by SCIP through <span class="mono">ilpy</span>, all installed offline from the pack's wheels.</li>
+        <li>The disappearance cost of 2.0 is the strongest term. It makes the solver keep tracks alive through weak links rather than end them, and it drops detections that cannot be linked at all. Together with the short-track filter in Stage 6 this pushes the predicted node count <em>below</em> the annotated count (ratio about 0.9), which the metric's node-count penalty does not punish.</li>
+        <li>The next stage discards the ILP's edges and re-derives them from geometry plus these probabilities. What survives from this stage is the node set and the probability lookup table, so the ILP acts mainly as a principled detection filter.</li>
+        <li><b>Measured:</b> stopping here (no Stage 6) scores 0.9182 on the held-out split versus 0.8837 with greedy selection in place of the ILP.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>ILPConfig</dt></div>
+      <div><dt>edge_weight</dt><dd>−1.0 × edge_prob</dd></div>
+      <div><dt>appearance_weight</dt><dd>0.0</dd></div>
+      <div><dt>disappearance_weight</dt><dd>2.0</dd></div>
+      <div><dt>division_weight</dt><dd>1.2</dd></div>
+      <div><dt>degree constraints</dt><dd>in ≤ 1, out ≤ 2</dd></div>
+      <div><dt>solver</dt><dd>SCIP (tracksdata / ilpy)</dd></div>
+      <div><dt>fallback (--no-ilp)</dt><dd>greedy, 1 parent / 2 children</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ STAGE 6 ============ -->
+<section class="stage" id="s6">
+  <div class="stage-head"><p class="eyebrow">Stage 6</p><h2>Repair the graph: nine passes from the public notebook</h2></div>
+  <p class="plain">The solver's answer is then reworked by a chain of rules. First all the links are redrawn using where each cell was heading, with the network's probability as a tie-breaker. Then short breaks in tracks are bridged, by inventing a cell where one frame was missed and checking the raw image really has something there. A few clear divisions are added. Very short tracks are thrown away unless they look trustworthy, and finally each track is smoothed. Every rule has a cap so it cannot run away.</p>
+  <div class="passes">
+    <div class="pass"><span class="k">1</span><div><div class="t">Sanity filter</div><div class="d">Drop any edge that skips a frame or spans more than 14 µm.</div></div><span class="v">≤ 14 µm · Δt = 1</span></div>
+    <div class="pass"><span class="k">2</span><div><div class="t">Motion relink</div><div class="d">Discard every ILP edge. Per frame pair, assign parents to children by Hungarian matching on a cost of distance-from-predicted-position + 0.05 × raw distance − 1.0 × network probability, where the predicted position extrapolates half of last frame's velocity. Two passes: a tight 5.5 µm gate, then 10 µm for the leftovers.</div></div><span class="v">5.5 / 10 µm · v 0.5 · bonus 1.0</span></div>
+    <div class="pass"><span class="k">3</span><div><div class="t">Single-parent repair</div><div class="d">If a child still has two parents, keep the higher-probability one.</div></div><span class="v">in ≤ 1</span></div>
+    <div class="pass"><span class="k">4</span><div><div class="t">Gap-1 closing</div><div class="d">A track that ends at t and another that starts at t + 2 within 5.8 µm per step are joined by a synthetic node at the midpoint. The radius adapts slightly to local crowding, the midpoint is nudged toward the brightest voxel nearby, and for spans of 8.5 µm or more the DeepCenter network must agree there is a nucleus there. Capped at 5% of nodes.</div></div><span class="v">5.8 µm · DeepCenter ≥ 0.25</span></div>
+    <div class="pass"><span class="k">5</span><div><div class="t">Strict gap-2 recovery</div><div class="d">The same for two missing frames, with tighter limits (10.2 µm total, 4.4 µm per step) and a small cap, and only where both tracks have context on either side.</div></div><span class="v">10.2 / 4.4 µm · ≤ 180</span></div>
+    <div class="pass"><span class="k">6</span><div><div class="t">Safe divisions</div><div class="d">A parent with one child gains a second if an orphan child sits within 9 µm, the two sisters are within 14 µm of each other and roughly symmetric about the parent, and they are moving apart. Capped per frame and globally.</div></div><span class="v">9 / 14 µm · sym 0.6</span></div>
+    <div class="pass off"><span class="k">·</span><div><div class="t">Division geometry filter</div><div class="d">Present in the code, switched off in the 0.942 run.</div></div><span class="v">off</span></div>
+    <div class="pass"><span class="k">7</span><div><div class="t">Prune isolated</div><div class="d">Remove nodes with no edges at all.</div></div><span class="v">—</span></div>
+    <div class="pass"><span class="k">8</span><div><div class="t">Short-track filter + rescue</div><div class="d">Delete connected components with fewer than 6 nodes unless they contain a division. If that removes more than 10% of nodes, rescue components of length 4 or 5 whose mean edge probability is at least 0.88 and mean step at most 3 µm, up to 1.2% of nodes.</div></div><span class="v">min 6 · rescue ≥ 0.88</span></div>
+    <div class="pass"><span class="k">9</span><div><div class="t">Line-fit smoothing</div><div class="d">Move each interior node 80% of the way toward the straight-line fit through its ±2 neighbours along the track. Topology unchanged.</div></div><span class="v">window 2 · weight 0.8</span></div>
+  </div>
+  <figure>
+  <svg viewBox="0 0 900 250" role="img" aria-label="Two mechanisms. Left: motion relink, where a cell's previous displacement is extrapolated at half strength to a predicted position, and the child nearest that prediction wins even though another child is nearer the parent's current position. Right: gap-1 closing, where a track ending at frame t and one starting at frame t plus 2 are joined by an amber synthetic node at the midpoint, refined toward the brightest nearby voxel and confirmed by the DeepCenter heatmap.">
+    <defs><marker id="ah8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+      <marker id="ah8w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--warn)"/></marker></defs>
+    <text x="20" y="22" font-weight="700">Motion relink: link to where the cell is heading</text>
+    <g class="small muted" text-anchor="middle"><text x="60" y="48">t − 1</text><text x="170" y="48">t</text><text x="300" y="48">t + 1</text></g>
+    <line x1="60" y1="150" x2="170" y2="120" stroke="var(--link)" stroke-width="2.5"/>
+    <!-- velocity extrapolation -->
+    <line x1="170" y1="120" x2="225" y2="105" stroke="var(--warn)" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#ah8w)"/>
+    <circle cx="225" cy="105" r="5" fill="none" stroke="var(--warn)" stroke-width="1.6"/>
+    <text x="232" y="94" class="small" fill="var(--warn)">predicted = pos + 0.5 × velocity</text>
+    <!-- candidates -->
+    <circle cx="300" cy="90" r="8" fill="var(--cell)" stroke="currentColor"/><circle cx="300" cy="150" r="8" fill="var(--cell)" stroke="currentColor"/>
+    <circle cx="60" cy="150" r="8" fill="var(--cell)" stroke="currentColor"/><circle cx="170" cy="120" r="8" fill="var(--cell)" stroke="currentColor"/>
+    <line x1="170" y1="120" x2="300" y2="90" stroke="var(--link)" stroke-width="2.5"/>
+    <line x1="170" y1="120" x2="300" y2="150" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="3 3"/>
+    <text x="318" y="86" class="small" fill="var(--link)">chosen: near the prediction</text>
+    <text x="318" y="160" class="small muted">nearer the parent, but off-course</text>
+    <text x="20" y="196" class="small">cost = |child − predicted| + 0.05 · |child − parent| − 1.0 · prob(parent → child)</text>
+    <text x="20" y="212" class="small muted">Hungarian assignment per frame pair, first within 5.5 µm, then within 10 µm for whatever is still unmatched.</text>
+    <text x="20" y="226" class="small muted">The network's probability enters only as a bonus; geometry decides the rest. Repaired edges carry no probability.</text>
+    <!-- gap closing -->
+    <text x="500" y="22" font-weight="700">Gap-1 closing: invent the missed frame</text>
+    <g class="small muted" text-anchor="middle"><text x="540" y="48">t</text><text x="660" y="48">t + 1 (nothing detected)</text><text x="780" y="48">t + 2</text></g>
+    <line x1="440" y1="130" x2="540" y2="120" stroke="var(--link)" stroke-width="2.5"/>
+    <line x1="780" y1="100" x2="880" y2="92" stroke="var(--link)" stroke-width="2.5"/>
+    <g stroke="var(--warn)" stroke-width="2.5"><line x1="540" y1="120" x2="660" y2="110"/><line x1="660" y1="110" x2="780" y2="100"/></g>
+    <g fill="var(--cell)" stroke="currentColor"><circle cx="440" cy="130" r="8"/><circle cx="540" cy="120" r="8"/><circle cx="780" cy="100" r="8"/><circle cx="880" cy="92" r="8"/></g>
+    <circle cx="660" cy="110" r="8" fill="var(--warn)" stroke="currentColor"/>
+    <circle cx="660" cy="110" r="22" fill="none" stroke="var(--warn)" stroke-dasharray="3 3"/>
+    <text x="660" y="150" text-anchor="middle" class="small" fill="var(--warn)">synthetic node at the midpoint</text>
+    <text x="660" y="164" text-anchor="middle" class="small muted">shifted ≤ 3.2 µm toward the brightest voxel</text>
+    <text x="440" y="196" class="small">Allowed if end → start ≤ 2 × 5.8 µm (± a small crowding adjustment).</text>
+    <text x="440" y="212" class="small muted">If the span is ≥ 8.5 µm the DeepCenter heatmap at the new node must read ≥ 0.25.</text>
+    <text x="440" y="226" class="small muted">Add-only gate: DeepCenter never removes a detector output. Capped at 5% of nodes or 2000.</text>
+  </svg>
+  <figcaption><b>Two of the nine passes, drawn.</b> The motion relink is the important one: it throws away the ILP's edges and redraws them from a constant-velocity prediction, using the network's probability only as a bonus in the cost. Gap closing adds nodes the detector missed, which the metric can reward because the 7 µm tolerance is generous. Amber marks anything the repair stage invented.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>How to read the effect of this stage</h3>
+      <ul>
+        <li><b>On our local metric, this stage is neutral to slightly negative:</b> 0.9175 with it versus 0.9182 stopping after the ILP. It adds about 127 false-positive and 34 false-negative edges and recovers three divisions. The notebook's authors saw the same sign flip between their sparse local proxy and the dense leaderboard, so this is not a reason to drop it; it means our local metric cannot rank post-processing variants.</li>
+        <li>Consequently the rule on this branch: <em>keep the full chain for submissions, rank models by the ILP-stage number.</em></li>
+        <li><b>DeepCenter</b> is a separate GroupNorm/SiLU 3D U-Net (24 base channels) trained to paint nucleus centres on a 4× mean-pooled, per-frame percentile-normalised frame. The checkpoint is its epoch 2 of 500, as shipped; the port checks the epoch on load. It is consulted only for gap-closing nodes with span ≥ 8.5 µm.</li>
+        <li>Every pass is a boolean in <code>PostprocessConfig</code> and can be switched off from the command line with <span class="mono">--post-off</span> for an ablation. The whole stage was verified bit-exact against the notebook's own cell on two held-out videos.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>PostprocessConfig, selected</dt></div>
+      <div><dt>output_edge_max_um</dt><dd>14.0</dd></div>
+      <div><dt>motion_relink tight / relaxed</dt><dd>5.5 / 10.0 µm</dd></div>
+      <div><dt>motion_relink_velocity_weight</dt><dd>0.5</dd></div>
+      <div><dt>motion_relink_learned_bonus</dt><dd>1.0</dd></div>
+      <div><dt>gap_close_um</dt><dd>5.8 (× steps)</dd></div>
+      <div><dt>deepcenter gap threshold / span</dt><dd>0.25 / ≥ 8.5 µm</dd></div>
+      <div><dt>gap2 total / step</dt><dd>10.2 / 4.4 µm</dd></div>
+      <div><dt>safe_div parent / sister</dt><dd>9.0 / 14.0 µm</dd></div>
+      <div><dt>output_min_track_len</dt><dd>6 (rescue 4–5)</dd></div>
+      <div><dt>linefit window / weight</dt><dd>2 / 0.8</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ STAGE 7 ============ -->
+<section class="stage" id="s7">
+  <div class="stage-head"><p class="eyebrow">Stage 7</p><h2>Write the graph and score it</h2></div>
+  <p class="plain">The points and links for each video are saved as a small graph file, then flattened into the competition's CSV. To grade it, every predicted point is matched to the nearest hand-marked point within 7 micrometres, and the links are compared. Links that touch a cell nobody annotated are simply skipped, not penalised. A tenth of the score comes from getting divisions right.</p>
+  <figure>
+  <svg viewBox="0 0 780 210" role="img" aria-label="Four small panels showing how one predicted link is graded: a true positive when both ends match annotated nuclei joined by an annotated link; a false negative when an annotated link has no matching predicted link; a false positive when a predicted link contradicts an annotated one; and ignored when the predicted link touches a nucleus nobody annotated.">
+    <g class="small" text-anchor="middle" font-weight="700"><text x="105" y="22">True positive</text><text x="295" y="22">False negative</text><text x="485" y="22">False positive</text><text x="675" y="22">Ignored</text></g>
+    <g fill="var(--surface)" stroke="var(--line)"><rect x="20" y="32" width="170" height="130" rx="6"/><rect x="210" y="32" width="170" height="130" rx="6"/><rect x="400" y="32" width="170" height="130" rx="6"/><rect x="590" y="32" width="170" height="130" rx="6"/></g>
+    <g stroke="var(--gt)" fill="none"><circle cx="60" cy="97" r="22" stroke-dasharray="3 3"/><circle cx="150" cy="97" r="22" stroke-dasharray="3 3"/><line x1="60" y1="97" x2="150" y2="97" stroke-width="3" opacity="0.5"/></g>
+    <line x1="66" y1="103" x2="144" y2="105" stroke="var(--link)" stroke-width="2"/>
+    <g fill="var(--gt)"><circle cx="60" cy="97" r="4"/><circle cx="150" cy="97" r="4"/></g>
+    <g fill="var(--cell)"><circle cx="66" cy="103" r="4"/><circle cx="144" cy="105" r="4"/></g>
+    <g stroke="var(--gt)" fill="none"><circle cx="250" cy="97" r="22" stroke-dasharray="3 3"/><circle cx="340" cy="97" r="22" stroke-dasharray="3 3"/><line x1="250" y1="97" x2="340" y2="97" stroke-width="3" opacity="0.5"/></g>
+    <g fill="var(--gt)"><circle cx="250" cy="97" r="4"/><circle cx="340" cy="97" r="4"/></g>
+    <g fill="var(--cell)"><circle cx="256" cy="103" r="4"/><circle cx="334" cy="92" r="4"/></g>
+    <text x="295" y="128" text-anchor="middle" class="small muted">no predicted link</text>
+    <g stroke="var(--gt)" fill="none"><circle cx="440" cy="80" r="22" stroke-dasharray="3 3"/><circle cx="530" cy="70" r="22" stroke-dasharray="3 3"/><line x1="440" y1="80" x2="530" y2="70" stroke-width="3" opacity="0.5"/></g>
+    <g fill="var(--gt)"><circle cx="440" cy="80" r="4"/><circle cx="530" cy="70" r="4"/></g>
+    <g fill="var(--cell)"><circle cx="445" cy="85" r="4"/><circle cx="525" cy="130" r="4"/></g>
+    <line x1="445" y1="85" x2="525" y2="130" stroke="var(--link)" stroke-width="2"/>
+    <text x="485" y="152" text-anchor="middle" class="small muted">links a matched cell to the wrong partner</text>
+    <g stroke="var(--gt)" fill="none"><circle cx="630" cy="97" r="22" stroke-dasharray="3 3"/></g>
+    <g fill="var(--gt)"><circle cx="630" cy="97" r="4"/></g>
+    <g fill="var(--cell)"><circle cx="636" cy="101" r="4"/><circle cx="720" cy="97" r="4"/></g>
+    <line x1="636" y1="101" x2="720" y2="97" stroke="var(--link)" stroke-width="2"/>
+    <text x="720" y="118" text-anchor="middle" class="small muted">nobody annotated this cell</text>
+    <text x="675" y="152" text-anchor="middle" class="small muted">not counted either way (~98% of links)</text>
+    <g class="small">
+      <circle cx="28" cy="188" r="4" fill="var(--gt)"/><circle cx="28" cy="188" r="10" fill="none" stroke="var(--gt)" stroke-dasharray="3 3"/><text x="44" y="192">annotated nucleus with its 7 µm match radius</text>
+      <circle cx="300" cy="188" r="4" fill="var(--cell)"/><text x="310" y="192">predicted nucleus</text>
+      <line x1="420" y1="188" x2="450" y2="188" stroke="var(--link)" stroke-width="2"/><text x="456" y="192">predicted link</text>
+      <line x1="560" y1="188" x2="590" y2="188" stroke="var(--gt)" stroke-width="3" opacity="0.5"/><text x="596" y="192">annotated link</text>
+    </g>
+  </svg>
+  <figcaption><b>Edge Jaccard = TP / (TP + FP + FN), then a node-count penalty.</b> Nodes are matched per frame by optimal assignment within 7 µm, then each predicted link is classified. The Jaccard is multiplied by <span class="mono">1 − 0.1 × (predicted nodes − true nodes) / true nodes</span> when the prediction has more nodes than the truth; this pipeline predicts fewer, so the penalty is currently zero. The final score adds a tenth of the same Jaccard computed over divisions. A per-video weight tracks how densely each video was annotated.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>Files, parity, and honest numbers</h3>
+      <ul>
+        <li><code>predict.py</code> writes one <span class="mono">.geff</span> per video, carrying each edge's probability so the graph stays inspectable; <code>make_submission.py</code> converts them to <span class="mono">submission.csv</span>. On Kaggle the run notebook installs the ILP stack from an attached wheels dataset, checks every model file's sha256, and audits the CSV.</li>
+        <li><b>Parity is the contract.</b> The pack's own script, with and without the notebook's six patches, was rerun on two held-out videos, and our ILP-stage output matched it node for node, edge for edge, with zero difference in probabilities. Our post-processing likewise matched the notebook's cell exactly. Any change to the predictor, the ILP or the repair stage reruns this check.</li>
+        <li><b>Read the numbers below as training-set numbers.</b> The public weights trained on all 199 videos, including our 20 held-out ones. They are still informative for same-weights, different-configuration comparisons, which is how every ablation on this page was measured.</li>
+        <li>Cross-checkpoint local comparisons were anti-correlated with the leaderboard in the sibling repository. Per-embryo numbers are always reported; the leaderboard is the only true cross-embryo signal.</li>
+      </ul>
+    </div>
+    <div class="stats" style="grid-template-columns:1fr">
+      <div class="stat"><span class="n">0.9175</span><span class="l">full pipeline, held-out split, public weights (0.8314 on 44b6 · 0.9305 on 6bba)</span></div>
+      <div class="stat"><span class="n">0.9182 / 0.9075 / 0.8837</span><span class="l">stop after ILP · primary seed only · greedy instead of ILP</span></div>
+      <div class="stat"><span class="n">0.8056</span><span class="l">the first edition's best checkpoint on the same split, for scale (honest held-out: 0.6365 on 44b6 · 0.8278 on 6bba)</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TRAINING ============ -->
+<section class="stage" id="s8">
+  <div class="stage-head"><p class="eyebrow">Training</p><h2>The 400-epoch recipe, now running on our own split</h2></div>
+  <p class="plain">The detector and the link scorer are trained at the same time from the same batches. Each step takes eight two-frame windows, randomly mirrors them in any of the three axes and nudges their brightness, and pushes the detector to light up at the hand-marked nuclei. On the same step, the detector's fresh detections are matched to the hand-marked cells so the link scorer can be told which pairs are truly the same cell. This runs for 400 passes over the data at a fixed learning rate; on one of this cluster's GPUs that is about a week per seed.</p>
+  <figure>
+  <svg viewBox="0 0 780 240" role="img" aria-label="Training loop: a batch of eight two-frame windows is sampled and augmented with independent z, y, x flips and a brightness shift, passed through the temporal U-Net to produce centre logits compared against one-hot ground truth with a count-normalised weighted binary cross-entropy; the live detections above logit 0.3 are matched to ground truth within 5 micrometres to build the edge target for the node transformer's focal softmax loss; both losses are summed and one AdamW step with gradient clipping updates everything.">
+    <defs><marker id="ah9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+    <g fill="var(--surface)" stroke="currentColor" stroke-width="1.1">
+      <rect x="20" y="70" width="120" height="60" rx="7"/>
+      <rect x="180" y="70" width="120" height="60" rx="7"/>
+      <rect x="340" y="30" width="130" height="60" rx="7" stroke="var(--cell)" stroke-width="2"/>
+      <rect x="340" y="120" width="130" height="60" rx="7" stroke="var(--link)" stroke-width="2"/>
+      <rect x="520" y="30" width="110" height="60" rx="7"/>
+      <rect x="520" y="120" width="110" height="60" rx="7"/>
+      <rect x="670" y="70" width="96" height="60" rx="7"/>
+    </g>
+    <g text-anchor="middle" font-size="12.5">
+      <text x="80" y="95">sample windows</text><text x="80" y="111" class="small muted">8 × (t, t+1), full frame</text>
+      <text x="240" y="95">augment</text><text x="240" y="111" class="small muted">flip z/y/x · shift ±0.1</text>
+      <text x="405" y="55">temporal U-Net</text><text x="405" y="71" class="small muted">features + centre logits</text>
+      <text x="405" y="145">detect &amp; match</text><text x="405" y="161" class="small muted">logit > 0.3 ↔ GT ≤ 5 µm</text>
+      <text x="575" y="55">detection loss</text><text x="575" y="71" class="small muted">BCE, w+ 1/n+, w− 0.01/n−</text>
+      <text x="575" y="145">edge loss</text><text x="575" y="161" class="small muted">focal softmax-over-parents</text>
+      <text x="718" y="95">one step</text><text x="718" y="111" class="small muted">AdamW 1e-4 · clip 1.0</text>
+    </g>
+    <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah9)" fill="none">
+      <line x1="140" y1="100" x2="178" y2="100"/>
+      <path d="M300 100 C 320 100, 320 60, 338 60"/>
+      <path d="M470 60 H 518"/>
+      <path d="M405 90 V 118"/>
+      <path d="M470 150 H 518"/>
+      <path d="M630 60 C 650 60, 650 100, 668 100"/>
+      <path d="M630 150 C 650 150, 650 100, 668 100"/>
+    </g>
+    <text x="405" y="108" text-anchor="end" class="small muted">live peaks →</text>
+    <text x="494" y="52" text-anchor="middle" class="small muted">vs one-hot GT</text>
+    <text x="494" y="142" text-anchor="middle" class="small muted">node transformer →</text>
+    <path d="M718 130 V 200 H 80 V 134" fill="none" stroke="var(--muted)" stroke-dasharray="4 4" marker-end="url(#ah9)"/>
+    <text x="400" y="214" text-anchor="middle" class="small muted">repeat: every consecutive window of every training video per epoch (≈ 16,800 windows), 400 epochs, constant learning rate, no scheduler</text>
+    <text x="400" y="230" text-anchor="middle" class="small muted">loss = edge + 1.0 × detection · about 25 minutes per epoch on one L40S</text>
+  </svg>
+  <figcaption><b>One optimizer, one backward pass, two losses, and no schedule.</b> The detection target is one voxel per annotated nucleus; because almost every voxel is background, positives are weighted 1/n<sub>pos</sub> and negatives 0.01/n<sub>neg</sub>, which is why the trained sigmoid saturates hard at real cells. The edge target is built from the detector's <em>own live peaks</em> matched to ground truth within 5 µm, and the loss is a focal-weighted binary cross-entropy on the softmax-over-parents probabilities, restricted to rows and columns that have an annotation.</figcaption>
+  </figure>
+  <div class="deep">
+    <div><h3>The recipe, our additions, and where it stands</h3>
+      <ul>
+        <li><b>The recipe is the pack's, verbatim:</b> AdamW at 1e-4 with default weight decay, batch 8, gradient clip 1.0, brightness shift ±0.1, independent z/y/x flips, 400 epochs. The pack's own history reached its best validation at epoch 381 of 400 on an RTX 5090, about 20 minutes per epoch.</li>
+        <li><b>What we added around it:</b> resumable checkpoints, a seed, periodic snapshots, a wall-clock limit for the self-resubmitting SLURM chain, and <span class="mono">val_score</span>, the competition metric computed through the ILP stage (no TTA) every 5 epochs, which selects the <span class="mono">_best</span> checkpoint. The pack's own accuracy × recall validation is logged but not used for selection.</li>
+        <li><b>Held-out discipline:</b> train on 179 videos, hold out 20 (5 × 44b6, 15 × 6bba). The pack's "train on all 199, validate on 40 of them" is deliberately not reproduced, because it is what makes the public weights' held-out numbers training-set numbers.</li>
+        <li><b>Status on 2026-09-11:</b> two seeds (0 and 314159) are training, one L40S each, about 25 minutes per epoch, so roughly 7 days per seed. DeepCenter is training separately for 50 epochs. Decision point at epoch 100: sweep the epoch 25/50/75/100 snapshots through the full pipeline per embryo, and stop early if the tracking score has flattened.</li>
+        <li>Four-GPU DataParallel was measured at only 1.6× because CPU-side per-sample loops dominate the step, and was rejected. Vectorising those loops is the obvious same-numerics speed-up, not yet done.</li>
+      </ul>
+    </div>
+    <dl class="params">
+      <div class="hd"><dt>TrainConfig</dt></div>
+      <div><dt>epochs / schedule</dt><dd>400 · constant</dd></div>
+      <div><dt>learning rate</dt><dd>1e-4 (AdamW)</dd></div>
+      <div><dt>batch size</dt><dd>8 full-frame windows</dd></div>
+      <div><dt>grad clip</dt><dd>1.0</dd></div>
+      <div><dt>det_neg_weight</dt><dd>0.01</dd></div>
+      <div><dt>det_match_logit_threshold</dt><dd>0.3 (logit)</dd></div>
+      <div><dt>max_match_distance_um</dt><dd>5.0</dd></div>
+      <div><dt>augmentation</dt><dd>z/y/x flips · shift ±0.1</dd></div>
+      <div><dt>eval_tracking_every</dt><dd>5 epochs</dd></div>
+      <div><dt>time per epoch (L40S)</dt><dd>≈ 25 min</dd></div>
+    </dl>
+  </div>
+  <div class="callout"><b>Philosophy on this branch.</b> Replicate exactly first, measure per embryo, then deviate only on held-out evidence written to <span class="mono">reports/</span>. Every hyperparameter above is a dataclass default whose value is the notebook's committed value. If you change one, it is an experiment, not a fix, and it gets a report even when the result is "no measurable effect".</div>
+</section>
+
+<!-- ============ CHANGES ============ -->
+<section class="stage" id="diff">
+  <div class="stage-head"><p class="eyebrow">Changes</p><h2>What changed from the first edition of this page</h2></div>
+  <p class="plain">The previous pipeline was this repository's own design: a smaller network, a tiny link scorer, and a greedy linker with no repairs. It reached about 0.80 on held-out videos and 0.842 on the leaderboard. On 11 September it was set aside in favour of replicating a public solution near-verbatim, with attribution. Almost every stage changed; this table is the diff.</p>
+  <div class="tablewrap">
+  <table class="compare">
+    <thead><tr><th>Stage</th><th>First edition (branch main)</th><th>This edition (branch replicate-0942)</th></tr></thead>
+    <tbody>
+      <tr><td>Normalise</td><td>per frame, percentiles 1 / 99.9, clipped to [0, 1]</td><td>per video, quantiles 0.001 / 0.999 from the zarr attributes, clamped at 0 only</td></tr>
+      <tr><td>Downsample</td><td>mean-pool 4 × 4 in y, x; half-voxel offset on the way back</td><td>strided decimation [::4, ::4]; grid × 4 on the way back, no offset</td></tr>
+      <tr><td>Detector</td><td>U-Net 16 / 32 / 64, InstanceNorm + GELU, dropout 0.1, decodes frame t only, window (t − 1, t)</td><td>TemporalUNet3D 32 / 64 / 128, BatchNorm + ReLU, no dropout, decodes both frames, window (t, t + 1), 32-channel features</td></tr>
+      <tr><td>Ensembling</td><td>4 flips, one model</td><td>8 planar views, two seeds blended 0.2 / 0.8 with a 90% retention guard, feature-map TTA</td></tr>
+      <tr><td>Peaks</td><td>sigmoid &gt; 0.985, 5 × 5 × 5 window, sub-voxel refinement, cap 1500</td><td>sigmoid &gt; 0.965, 3 × 3 × 3 window, integer grid coordinates, no cap</td></tr>
+      <tr><td>Link scorer</td><td>MLP on 16 + 16 features + Δ(µm), 36 → 64 → 64 → 1, sigmoid, only pairs within 15 µm</td><td>node transformer: 32 + 32 inputs → 128, 4 cross-attention blocks, pair MLP, softmax over parents, all pairs; reverse-time harmonic fusion; second-seed consensus</td></tr>
+      <tr><td>Selection</td><td>greedy by score, in ≤ 1 and out ≤ 1, threshold 0.5</td><td>exact ILP, in ≤ 1 and out ≤ 2, costs −prob / 0 / 2.0 / 1.2, candidates &gt; 0.48</td></tr>
+      <tr><td>Divisions</td><td>never predicted</td><td>ILP may choose them; a safe-division pass adds more</td></tr>
+      <tr><td>Post-processing</td><td>none (measured inert in the sibling repo)</td><td>nine passes: motion relink, gap-1 and gap-2 closing with synthetic nodes, DeepCenter gate, short-track filter, line fit</td></tr>
+      <tr><td>Models</td><td>one checkpoint</td><td>three files: primary seed, secondary seed 314159, DeepCenter (epoch 2)</td></tr>
+      <tr><td>Training</td><td>30 epochs, cosine from 5e-4, batch 4 × 2, y/x flips, gain and bias jitter; ≈ 30 min</td><td>400 epochs, constant 1e-4, batch 8, z/y/x flips, brightness shift; ≈ 7 days per seed</td></tr>
+      <tr><td>Selection of checkpoint</td><td>last epoch usually beat lowest val loss (14 of 17 runs)</td><td>competition metric through the ILP stage every 5 epochs picks <span class="mono">_best</span></td></tr>
+      <tr><td>Held-out split score</td><td>0.8056 (honest held-out)</td><td>0.9175 with public weights (a training-set number); own seeds pending</td></tr>
+      <tr><td>Fidelity check</td><td>none needed</td><td>bit-exact parity with the reference script and notebook on two videos</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="callout"><b>What carried over unchanged.</b> The metric implementation, the held-out split of 20 whole videos, per-embryo reporting, the error-analysis harness, the frame-by-frame zarr reader, the SLURM batch runner, and the habit of writing a report for every experiment. The insight that drove the switch also carried over: association errors in crowded regions are the problem, and the previous edge scorer was the smallest part of the previous pipeline.</div>
+</section>
+
+<section class="stage" id="gloss">
+  <div class="stage-head"><p class="eyebrow">Glossary</p><h2>Words used above</h2></div>
+  <dl class="gloss">
+    <div><dt>voxel</dt><dd>A 3D pixel: one little box of the volume with one brightness value.</dd></div>
+    <div><dt>µm (micrometre)</dt><dd>A millionth of a metre. A nucleus here is roughly 5 to 10 µm across.</dd></div>
+    <div><dt>frame</dt><dd>One full 3D snapshot of the embryo. A video is 40 to 100 frames.</dd></div>
+    <div><dt>quantile</dt><dd>The brightness below which a given fraction of all voxels fall. The 0.999 quantile is brighter than 99.9% of the video.</dd></div>
+    <div><dt>logit, sigmoid, softmax</dt><dd>The network outputs unbounded numbers (logits); a sigmoid squashes one to a probability, a softmax turns a group of them into probabilities that sum to one.</dd></div>
+    <div><dt>U-Net</dt><dd>A network shaped like a U: shrink the image to understand context, expand it back to make a per-voxel decision, with shortcuts across.</dd></div>
+    <div><dt>attention</dt><dd>A mechanism where each item computes weights over other items and mixes in their information. Self-attention: within one set. Cross-attention: from one set to another.</dd></div>
+    <div><dt>test-time augmentation (TTA)</dt><dd>Running the network on several transformed copies of the input and averaging the answers.</dd></div>
+    <div><dt>seed</dt><dd>The random starting point of a training run. Two seeds give two different networks trained the same way.</dd></div>
+    <div><dt>moment matching</dt><dd>Shifting and scaling one set of numbers so its mean and spread equal another's.</dd></div>
+    <div><dt>harmonic mean</dt><dd>An average that is pulled toward the smaller value. Used to require agreement.</dd></div>
+    <div><dt>ILP</dt><dd>Integer linear program: an optimisation over yes/no choices with linear costs and constraints, solved exactly.</dd></div>
+    <div><dt>Hungarian matching</dt><dd>The exact algorithm for pairing two sets so the total cost is smallest.</dd></div>
+    <div><dt>synthetic node</dt><dd>A cell position the repair stage invents to bridge a frame where the detector found nothing.</dd></div>
+    <div><dt>DeepCenter</dt><dd>A separate small network that paints where nucleus centres are; used here only to confirm synthetic nodes.</dd></div>
+    <div><dt>Jaccard index</dt><dd>Overlap between two sets: matches divided by everything in either set. 1.0 means perfect.</dd></div>
+    <div><dt>held-out</dt><dd>Data the model never trained on, kept back to estimate how it will do on new data.</dd></div>
+    <div><dt>parity</dt><dd>Producing exactly the same output as the reference code on the same input.</dd></div>
+  </dl>
+</section>
+
+<footer>Numbers are read from <span class="mono">PredictConfig</span>, <span class="mono">ILPConfig</span>, <span class="mono">PostprocessConfig</span>, <span class="mono">TrainConfig</span>, and the reports in <span class="mono">reports/</span> as of 2026-09-11. Colour is meaning throughout: green is a cell or detection, magenta is a link, blue is attention or the second seed, amber is something the repair stage did, grey is human annotation.</footer>
+</div>
+
+</body></html>

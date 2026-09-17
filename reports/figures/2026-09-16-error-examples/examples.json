@@ -1,0 +1,203 @@
+{
+ "detector": [
+  [
+   "D1 sustained miss (>=3 frames), field below threshold",
+   {
+    "name": "6bba_268e1230",
+    "gid": 88000773,
+    "t": 87
+   }
+  ],
+  [
+   "D1 sustained miss (>=3 frames), field below threshold",
+   {
+    "name": "6bba_3a1849c2",
+    "gid": 38000388,
+    "t": 37
+   }
+  ],
+  [
+   "D2 transient miss (1-2 frames), field below threshold",
+   {
+    "name": "6bba_5c824876",
+    "gid": 17000279,
+    "t": 16
+   }
+  ],
+  [
+   "D2 transient miss (1-2 frames), field below threshold",
+   {
+    "name": "6bba_3abfe10a",
+    "gid": 69000850,
+    "t": 68
+   }
+  ],
+  [
+   "D3 field above threshold but no peak kept (ridge into a neighbour)",
+   {
+    "name": "6bba_7b5d3b2c",
+    "gid": 2000010,
+    "t": 1
+   }
+  ],
+  [
+   "D3 field above threshold but no peak kept (ridge into a neighbour)",
+   {
+    "name": "44b6_d5e7d891",
+    "gid": 177000000062,
+    "t": 16
+   }
+  ],
+  [
+   "D4 merged: nearest detection claimed by a neighbouring GT cell",
+   {
+    "name": "44b6_706092f0",
+    "gid": 448000000016,
+    "t": 51
+   }
+  ],
+  [
+   "D5 local-metric truncation artefact (detection 5.6-7 um away, mostly in z)",
+   {
+    "name": "44b6_e57ff5c6",
+    "gid": 65000000021,
+    "t": 41
+   }
+  ],
+  [
+   "D5 local-metric truncation artefact (detection 5.6-7 um away, mostly in z)",
+   {
+    "name": "6bba_283bf9f1",
+    "gid": 49001493,
+    "t": 48
+   }
+  ],
+  [
+   "X bright cell (brightness > 8x median), no detection nearby",
+   {
+    "name": "6bba_c27cba08",
+    "gid": 97000915,
+    "t": 96
+   }
+  ]
+ ],
+ "linker": [
+  [
+   "L1a wrong partner chosen, near-tie (margin < 0.1)",
+   {
+    "name": "6bba_5c824876",
+    "u": 2000036,
+    "v": 3000054,
+    "t": 1
+   }
+  ],
+  [
+   "L1a wrong partner chosen, near-tie (margin < 0.1)",
+   {
+    "name": "44b6_d5e7d891",
+    "u": 179000000017,
+    "v": 180000000017,
+    "t": 18
+   }
+  ],
+  [
+   "L1b wrong partner chosen, confident (margin > 0.5)",
+   {
+    "name": "6bba_3abfe10a",
+    "u": 90001607,
+    "v": 91001647,
+    "t": 89
+   }
+  ],
+  [
+   "L1b wrong partner chosen, confident (margin > 0.5)",
+   {
+    "name": "6bba_2312ac41",
+    "u": 24000354,
+    "v": 25000365,
+    "t": 23
+   }
+  ],
+  [
+   "L1b wrong partner chosen, intermediate margin",
+   {
+    "name": "6bba_d1acb6ff",
+    "u": 25000251,
+    "v": 26000263,
+    "t": 24
+   }
+  ],
+  [
+   "L1b wrong partner chosen, intermediate margin",
+   {
+    "name": "44b6_e57ff5c6",
+    "u": 64000000060,
+    "v": 65000000060,
+    "t": 40
+   }
+  ],
+  [
+   "L1c wrong partner: true partner ranked first but taken (greedy)",
+   {
+    "name": "44b6_1574802b",
+    "u": 160000000021,
+    "v": 161000000021,
+    "t": 21
+   }
+  ],
+  [
+   "L1d wrong partner: true partner beyond the 15 um gate",
+   {
+    "name": "44b6_d754aa59",
+    "u": 61000000053,
+    "v": 62000000053,
+    "t": 55
+   }
+  ],
+  [
+   "L2 true target stolen by an unannotated competitor; cell left unlinked",
+   {
+    "name": "6bba_c328f2fd",
+    "u": 83000457,
+    "v": 84000464,
+    "t": 82
+   }
+  ],
+  [
+   "L2 true target stolen by an unannotated competitor; cell left unlinked",
+   {
+    "name": "6bba_cf35214c",
+    "u": 70000660,
+    "v": 71000673,
+    "t": 69
+   }
+  ],
+  [
+   "L3 true pair scored below 0.5; cell left unlinked",
+   {
+    "name": "6bba_3a1849c2",
+    "u": 10000096,
+    "v": 11000107,
+    "t": 9
+   }
+  ],
+  [
+   "L3 true pair scored below 0.5; cell left unlinked",
+   {
+    "name": "6bba_afb141ff",
+    "u": 46000428,
+    "v": 47000444,
+    "t": 45
+   }
+  ],
+  [
+   "L4 division (second child never linked)",
+   {
+    "name": "6bba_7af54fde",
+    "u": 56000905,
+    "v": 57000916,
+    "t": 55
+   }
+  ]
+ ]
+}
