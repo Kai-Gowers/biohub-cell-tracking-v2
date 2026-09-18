@@ -13,6 +13,7 @@ frames, and writes one compressed .npz:
   gt_status     int8 (N,)            0 link_ok, 1 link_wrong, 2 dropped, 3 weak, 4 none
   gt_track      int32 (N,)           annotated track id
   gt_id         int64 (N,)
+  gt_match      int64 (N,)            row index into `pred` of the prediction matched to the cell (7 um), -1 if none
   gt_links      float32 (M, 2, 4)    annotated links as vectors [[t,z,y,x],[1,dz,dy,dx]]
   pred          float32 (P, 4)       predicted nodes (final output)
   pred_status   int8 (P,)            0 no counted link leaving, 1 correct link leaves it, 2 false link leaves it
@@ -68,13 +69,13 @@ def main() -> int:
         if t % 20 == 0:
             print(f"  frame {t}/{T}", flush=True)
 
-    gt, gt_status, gt_track, gt_id = [], [], [], []
+    gt, gt_status, gt_track, gt_id, gt_match_pid = [], [], [], [], []
     pos = {}
     pred, pred_id = [], []
     dropped, dropped_p = [], []
     for t, f in enumerate(d["frames"]):
         for g in f["gt"]:
-            gt.append([t, g[1], g[2], g[3]]); gt_status.append(STATUS.index(g[5])); gt_track.append(g[4]); gt_id.append(g[0])
+            gt.append([t, g[1], g[2], g[3]]); gt_status.append(STATUS.index(g[5])); gt_track.append(g[4]); gt_id.append(g[0]); gt_match_pid.append(g[6])
             pos[g[0]] = np.array([t, g[1], g[2], g[3]], dtype=np.float32)
         for p in f["pred"]:
             pred.append([t, p[1], p[2], p[3]]); pred_id.append(p[0])
@@ -83,6 +84,7 @@ def main() -> int:
     gt = np.array(gt, dtype=np.float32); pred = np.array(pred, dtype=np.float32)
     ppos = {pid: pred[i] for i, pid in enumerate(pred_id)}
     pidx = {pid: i for i, pid in enumerate(pred_id)}
+    gt_match = np.array([pidx.get(m, -1) if m is not None and m >= 0 else -1 for m in gt_match_pid], dtype=np.int64)
 
     gt_links = []
     for u, v in d["gt_edges"]:
@@ -124,7 +126,7 @@ def main() -> int:
             "status": STATUS, "summary": d["summary"]}
     np.savez_compressed(
         out, frames=frames, gt=gt, gt_status=np.array(gt_status, dtype=np.int8), gt_track=np.array(gt_track, dtype=np.int32),
-        gt_id=np.array(gt_id, dtype=np.int64), gt_links=np.array(gt_links, dtype=np.float32).reshape(-1, 2, 4),
+        gt_id=np.array(gt_id, dtype=np.int64), gt_match=gt_match, gt_links=np.array(gt_links, dtype=np.float32).reshape(-1, 2, 4),
         pred=pred, pred_status=pred_status, pred_track=pred_track,
         pred_links=np.array(pred_links, dtype=np.float32).reshape(-1, 2, 4), pred_link_cls=np.array(pred_link_cls, dtype=np.int8),
         dropped=np.array(dropped, dtype=np.float32).reshape(-1, 4), dropped_p=np.array(dropped_p, dtype=np.float32),
