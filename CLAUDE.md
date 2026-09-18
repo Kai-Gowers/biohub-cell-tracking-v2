@@ -19,7 +19,7 @@ The 0.908 "clean approach" markdown in `context/` documents a *different* notebo
 
 **Pipeline: TemporalUNet3D + node transformer (`pack_predict.py`: 8-view TTA, edge-feature TTA, dual-seed blend + retention guard, bidirectional harmonic fusion, low-margin consensus) -> tracksdata ILP (`ilp.py`) -> notebook post-processing (`postprocess.py`: motion relink, gap-1/gap-2 closing, safe divisions, short-track filter + rescue, line-fit) -> one `.geff` per volume -> `submission.csv`.**
 
-Philosophy on this branch: replicate exactly first, measure per embryo, then deviate only on held-out evidence written to `reports/`. Every hyperparameter is a dataclass default whose value is the notebook's committed value: `pack_predict.PredictConfig`, `ilp.ILPConfig`, `postprocess.PostprocessConfig`, `pack_train.TrainConfig`, `deepcenter_train.DeepCenterTrainConfig`. If you change one, it is an experiment, not a fix.
+Philosophy on this branch: replicate exactly first, measure per embryo, then deviate only on held-out evidence written to `reports/`. Every hyperparameter is a dataclass default whose value is the notebook's committed value: `pack_predict.PredictConfig`, `ilp.ILPConfig`, `postprocess.PostprocessConfig`, `pack_train.TrainConfig`, `deepcenter_train.DeepCenterTrainConfig`. If you change one, it is an experiment, not a fix. Validated deviations live in `scripts/predict.py --preset tuned` (the default; `--preset notebook` reproduces the notebook exactly), so the dataclasses stay faithful and the parity check keeps working. Current deviation: `output_motion_relink=False` (2026-09-17: +0.011 blend / +0.009 single seed / +0.018 shipped weights on the clean split, both embryos, fewer FP and FN; `reports/2026-09-17-error-analysis-0942.md`). The 0.947 public notebook's extra changes (relink 6.0 µm, gap 5.0 µm, DeepCenter safe-division veto 0.20, secondary edge weight 0.15, DeepCenter D4 TTA, on-Kaggle post-process sweep) were all measured flat here (`reports/2026-09-17-nb947-comparison.md`); `--post-set FIELD=VALUE` / `--predict-set FIELD=VALUE` exist for such tests.
 
 **Parity is the contract.** `scripts/parity/build_ref_oracle.py` reruns the pack's own script (unpatched = "vanilla", or with the notebook's cell-16 patches = "patched") on two held-out volumes into `dist/ref_pack/`; `scripts/parity/parity_check.py` compares our `--stage ilp` output and our post-processing against it. On 2026-09-11 all three were bit-exact (identical node sets, edge sets and `edge_prob`). Re-run this after touching anything in `pack_predict.py`, `ilp.py` or `postprocess.py`.
 
@@ -51,8 +51,9 @@ DC=context/pack_deepcenter/weights/full_frame_center/best.pt
 python scripts/predict.py --checkpoint $P --secondary-checkpoint $S --deepcenter $DC \
     --test-dir data/biohub-cell-tracking-during-development/train --split dist/heldout_split.json --out-dir dist/preds_val_x
 python scripts/score_local.py --geff-dir dist/preds_val_x --split dist/heldout_split.json
-# ablations: --stage ilp (no post-processing) | --no-ilp | --no-bidir | --no-edge-tta | --tta-views flip |
-#            --post-off output_gap2_recovery (any PostprocessConfig boolean) | drop --secondary-checkpoint / --deepcenter
+# ablations: --stage ilp (no post-processing) | --no-ilp | --no-bidir | --no-edge-tta | --tta-views flip | --preset notebook |
+#            --post-off output_gap2_recovery (any PostprocessConfig boolean) | --post-set gap_close_um=5.0 | --predict-set secondary_edge_weight=0.15 |
+#            drop --secondary-checkpoint / --deepcenter.  Error analysis: scripts/error_detection_misses.py, error_stage_diff.py, error_examples_0942.py
 
 # Train the pack recipe on our held-out split (resumable; val_score selects _best)
 python scripts/train.py --epochs 400 --lr 1e-4 --batch-size 8 --seed 0 --out dist/models/pack_s0.pt

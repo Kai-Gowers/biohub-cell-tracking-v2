@@ -58,8 +58,17 @@ def main() -> int:
     parser.add_argument("--no-postprocess", action="store_true", help="Same as --stage ilp.")
     parser.add_argument("--det-threshold", type=float, default=None)
     parser.add_argument("--edge-threshold", type=float, default=None, help="Override the 0.48/0.5 candidate threshold.")
+    parser.add_argument("--preset", choices=["tuned", "notebook"], default="tuned",
+                        help="'notebook' = the 0.942 notebook's committed post-processing (PostprocessConfig defaults); "
+                             "'tuned' (default) = notebook + our held-out-validated deviations, currently only "
+                             "output_motion_relink=False (+0.011 blend / +0.009 single seed / +0.018 shipped weights on the "
+                             "clean 20-volume split, reports/2026-09-17-error-analysis-0942.md). --post-off/--post-set apply on top.")
     parser.add_argument("--post-off", action="append", default=[], metavar="FLAG",
                         help="PostprocessConfig boolean to switch off, e.g. output_gap2_recovery (repeatable).")
+    parser.add_argument("--post-set", action="append", default=[], metavar="FIELD=VALUE",
+                        help="Override any PostprocessConfig field, e.g. gap_close_um=5.0 or deepcenter_tta=1 (repeatable).")
+    parser.add_argument("--predict-set", action="append", default=[], metavar="FIELD=VALUE",
+                        help="Override any PredictConfig field, e.g. secondary_edge_weight=0.15 (repeatable).")
     parser.add_argument("--dump-stats", type=Path, default=None, help="Write per-volume stats JSON here.")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -90,14 +99,42 @@ def main() -> int:
     if args.edge_threshold is not None:
         pcfg_kwargs["edge_threshold_single"] = args.edge_threshold
         pcfg_kwargs["edge_threshold_dual"] = args.edge_threshold
+    def _typed_overrides(cls, items: list[str]) -> dict:
+        fields = {f.name: f for f in dataclasses.fields(cls)}
+        out: dict = {}
+        for item in items:
+            if "=" not in item:
+                raise SystemExit(f"expected FIELD=VALUE, got {item!r}")
+            name, raw = item.split("=", 1)
+            if name not in fields:
+                raise SystemExit(f"unknown {cls.__name__} field {name!r}")
+            typ = fields[name].type if not isinstance(fields[name].type, str) else fields[name].type
+            tname = typ if isinstance(typ, str) else getattr(typ, "__name__", str(typ))
+            if tname == "bool":
+                out[name] = raw.strip().lower() in ("1", "true", "yes", "on")
+            elif tname == "int":
+                out[name] = int(raw)
+            elif tname == "float":
+                out[name] = float(raw)
+            else:
+                out[name] = raw
+        return out
+
+    pcfg_kwargs.update(_typed_overrides(PredictConfig, args.predict_set))
     predict_cfg = PredictConfig(**pcfg_kwargs)
-    post_kwargs = {}
+    PRESETS = {"notebook": {}, "tuned": {"output_motion_relink": False}}
+    post_kwargs = dict(PRESETS[args.preset])
     valid = {f.name for f in dataclasses.fields(PostprocessConfig)}
     for flag in args.post_off:
         if flag not in valid:
             raise SystemExit(f"unknown PostprocessConfig field {flag!r}")
         post_kwargs[flag] = False
+    post_kwargs.update(_typed_overrides(PostprocessConfig, args.post_set))
     post_cfg = PostprocessConfig(**post_kwargs)
+    print(f"post-processing preset '{args.preset}': {PRESETS[args.preset]}"
+          + (f"; overrides: predict={_typed_overrides(PredictConfig, args.predict_set)} post={_typed_overrides(PostprocessConfig, args.post_set)}"
+             if (args.post_set or args.predict_set) else "")
+          + (f"; post-off={args.post_off}" if args.post_off else ""), flush=True)
 
     models = load_models(
         args.checkpoint, args.secondary_checkpoint, args.deepcenter,

@@ -112,6 +112,9 @@ class DeepCenter:
     score_win_z: int = 1
     score_win_yx: int = 2
     cache_max_frames: int = 8
+    # 0.947-notebook option (BIOHUB_DEEPCENTER_TTA): average the logits over the D4 views of the
+    # pooled frame before the sigmoid. Off by default = the 0.942 notebook's single view.
+    tta: bool = False
 
     def heatmap(self, frame: np.ndarray, cache: dict, key) -> np.ndarray:
         """Sigmoid heatmap for one full-resolution frame (cached by ``key``)."""
@@ -123,7 +126,23 @@ class DeepCenter:
         image = normalize_dynamic_range(pooled, self.cfg)
         with torch.no_grad():
             tensor = torch.from_numpy(image[None, None, ...]).to(device=self.device, dtype=torch.float32)
-            hm = torch.sigmoid(self.model(tensor))[0, 0].detach().cpu().numpy().astype(np.float32, copy=False)
+            logits = self.model(tensor)
+            if self.tta:
+                acc, nv = logits.clone(), 1
+                for dims in [(-1,), (-2,), (-2, -1)]:
+                    acc = acc + self.model(tensor.flip(dims)).flip(dims)
+                    nv += 1
+                if tensor.shape[-1] == tensor.shape[-2]:
+                    for k in (1, 3):
+                        acc = acc + torch.rot90(self.model(torch.rot90(tensor, k, dims=(-2, -1))), -k, dims=(-2, -1))
+                        nv += 1
+                    acc = acc + self.model(tensor.transpose(-1, -2)).transpose(-1, -2)
+                    nv += 1
+                    at = torch.rot90(tensor, 1, dims=(-2, -1)).transpose(-1, -2)
+                    acc = acc + torch.rot90(self.model(at).transpose(-1, -2), -1, dims=(-2, -1))
+                    nv += 1
+                logits = acc / nv
+            hm = torch.sigmoid(logits)[0, 0].detach().cpu().numpy().astype(np.float32, copy=False)
         cache[key] = hm
         limit = max(1, int(self.cache_max_frames))
         while len(cache) > limit:

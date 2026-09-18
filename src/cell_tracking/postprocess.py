@@ -123,6 +123,7 @@ class PostprocessConfig:
     deepcenter_score_win_z: int = 1
     deepcenter_score_win_yx: int = 2
     deepcenter_score_cache_max_frames: int = 8
+    deepcenter_tta: bool = False          # 0.947 notebook: D4-averaged DeepCenter logits (BIOHUB_DEEPCENTER_TTA)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -252,6 +253,7 @@ def deepcenter_accept_repair_point(
     deepcenter.score_win_z = cfg.deepcenter_score_win_z
     deepcenter.score_win_yx = cfg.deepcenter_score_win_yx
     deepcenter.cache_max_frames = cfg.deepcenter_score_cache_max_frames
+    deepcenter.tta = cfg.deepcenter_tta
     heatmap = deepcenter.heatmap(frames.get(t), heatmap_cache, int(t))
     score = deepcenter.score_point(heatmap, point)
     if score is None:
