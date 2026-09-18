@@ -59,10 +59,10 @@ def main() -> int:
     parser.add_argument("--det-threshold", type=float, default=None)
     parser.add_argument("--edge-threshold", type=float, default=None, help="Override the 0.48/0.5 candidate threshold.")
     parser.add_argument("--preset", choices=["tuned", "notebook"], default="tuned",
-                        help="'notebook' = the 0.942 notebook's committed post-processing (PostprocessConfig defaults); "
-                             "'tuned' (default) = notebook + our held-out-validated deviations, currently only "
-                             "output_motion_relink=False (+0.011 blend / +0.009 single seed / +0.018 shipped weights on the "
-                             "clean 20-volume split, reports/2026-09-17-error-analysis-0942.md). --post-off/--post-set apply on top.")
+                        help="'notebook' = the 0.942 notebook's committed configuration (the dataclass defaults); "
+                             "'tuned' (default) = notebook + our held-out-validated deviations: motion relink off, ILP "
+                             "disappearance cost 3.0, edge candidate threshold 0.44 (together +0.017 blend / +0.014 single seed / "
+                             "+0.023 shipped weights on the clean 20-volume split). Explicit flags and --*-set apply on top.")
     parser.add_argument("--post-off", action="append", default=[], metavar="FLAG",
                         help="PostprocessConfig boolean to switch off, e.g. output_gap2_recovery (repeatable).")
     parser.add_argument("--post-set", action="append", default=[], metavar="FIELD=VALUE",
@@ -89,7 +89,18 @@ def main() -> int:
         print(f"wrote split: {split_path}")
 
     stage = "ilp" if args.no_postprocess and args.stage == "full" else args.stage
-    pcfg_kwargs: dict = {"use_ilp": not args.no_ilp}
+    # Validated deviations from the 0.942 notebook (reports/2026-09-17-error-analysis-0942.md,
+    # reports/2026-09-18-ilp-cost-and-edge-threshold.md). Explicit flags and --*-set override the preset.
+    PRESETS = {
+        "notebook": {"predict": {}, "ilp": {}, "post": {}},
+        "tuned": {
+            "predict": {"edge_threshold_dual": 0.44, "edge_threshold_single": 0.44},   # candidate links admitted (0.48 / 0.5)
+            "ilp": {"disappearance_weight": 3.0},                                      # track-end cost (2.0)
+            "post": {"output_motion_relink": False},                                   # motion relink pass off
+        },
+    }
+    preset = PRESETS[args.preset]
+    pcfg_kwargs: dict = {"use_ilp": not args.no_ilp, **preset["predict"]}
     if args.no_tta:
         pcfg_kwargs["det_tta"] = False
     pcfg_kwargs["det_tta_views"] = args.tta_views
@@ -126,9 +137,8 @@ def main() -> int:
 
     pcfg_kwargs.update(_typed_overrides(PredictConfig, args.predict_set))
     predict_cfg = PredictConfig(**pcfg_kwargs)
-    ilp_cfg = ILPConfig(**_typed_overrides(ILPConfig, args.ilp_set))
-    PRESETS = {"notebook": {}, "tuned": {"output_motion_relink": False}}
-    post_kwargs = dict(PRESETS[args.preset])
+    ilp_cfg = ILPConfig(**{**preset["ilp"], **_typed_overrides(ILPConfig, args.ilp_set)})
+    post_kwargs = dict(preset["post"])
     valid = {f.name for f in dataclasses.fields(PostprocessConfig)}
     for flag in args.post_off:
         if flag not in valid:
@@ -136,7 +146,7 @@ def main() -> int:
         post_kwargs[flag] = False
     post_kwargs.update(_typed_overrides(PostprocessConfig, args.post_set))
     post_cfg = PostprocessConfig(**post_kwargs)
-    print(f"post-processing preset '{args.preset}': {PRESETS[args.preset]}"
+    print(f"preset '{args.preset}': {preset}"
           + (f"; overrides: predict={_typed_overrides(PredictConfig, args.predict_set)} post={_typed_overrides(PostprocessConfig, args.post_set)}"
              if (args.post_set or args.predict_set) else "")
           + (f"; post-off={args.post_off}" if args.post_off else "")
