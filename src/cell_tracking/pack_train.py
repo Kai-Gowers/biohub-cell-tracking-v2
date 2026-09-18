@@ -110,6 +110,10 @@ class TrainConfig:
     val_frac: float = VAL_FRAC
     val_seed: int = VAL_SEED
     val_prefix: str | None = None
+    # ours: train on EVERY volume (the reference weights' recipe) while still computing val_score on
+    # the usual split. That validation is then leaky (a train-set number) -- a smoothness / sanity
+    # signal only, not a generalisation estimate; pick a fixed late epoch (reports/2026-09-17-all199-training.md).
+    train_on_all: bool = False
 
     def model_config(self) -> dict:
         return {
@@ -770,8 +774,11 @@ def _train_impl(
 
     all_names = names or list_geff_datasets(train_dir)
     train_names, val_names = split_dataset_names(all_names, val_frac=cfg.val_frac, seed=cfg.val_seed, val_prefix=cfg.val_prefix)
+    if cfg.train_on_all:
+        train_names = sorted(all_names)
     log(f"{len(train_names)} train / {len(val_names)} val volumes"
-        + (f" (held-out embryo {cfg.val_prefix})" if cfg.val_prefix else ""), flush=True)
+        + (f" (held-out embryo {cfg.val_prefix})" if cfg.val_prefix else "")
+        + (" -- train_on_all: val volumes are ALSO trained on; val_score is leaky" if cfg.train_on_all else ""), flush=True)
 
     def _load(split_names: list[str], label: str):
         vols, wins = [], []
@@ -860,6 +867,7 @@ def _train_impl(
             "history": history,
             "val_names": list(val_names),
             "val_prefix": cfg.val_prefix,
+            "train_on_all": cfg.train_on_all,
         }
         if extra:
             d.update(extra)

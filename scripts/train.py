@@ -44,6 +44,9 @@ def main() -> int:
                    help="Extra augmentations (experiment, off by default), comma-separated from: rot90,intensity,noise,treverse.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--val-embryo", type=str, default=None, help="Hold out every crop of this embryo (44b6|6bba).")
+    p.add_argument("--train-on-all", action="store_true",
+                   help="Train on all volumes (the reference weights' recipe); val_score is still computed on the "
+                        "usual split but is then leaky. For the final submission model, not for measuring.")
     p.add_argument("--eval-tracking-every", type=int, default=5)
     p.add_argument("--eval-max-batches", type=int, default=200)
     p.add_argument("--save-every", type=int, default=25)
@@ -78,7 +81,7 @@ def main() -> int:
         extra_augs=tuple(a for a in args.aug.split(",") if a),
         eval_tracking_every=args.eval_tracking_every, eval_max_batches=args.eval_max_batches,
         save_every=args.save_every, select_by=args.select_by, max_hours=args.max_hours,
-        data_parallel=not args.single_gpu, val_prefix=args.val_embryo,
+        data_parallel=not args.single_gpu, val_prefix=args.val_embryo, train_on_all=args.train_on_all,
         amp=args.amp, compile_unet=args.compile, ddp=args.ddp,
     )
     print(f"config: {cfg.to_dict()}", flush=True)

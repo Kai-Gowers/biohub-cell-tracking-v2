@@ -15,6 +15,7 @@ always read the node ratio alongside the score.
 from __future__ import annotations
 
 import argparse
+import sys
 import json
 from pathlib import Path
 
@@ -48,6 +49,9 @@ def held_out_names(checkpoint: Path) -> tuple[list[str], str | None]:
             f"{checkpoint} has no 'val_names'; it predates held-out tracking or was "
             "trained on every volume."
         )
+    if ckpt.get("train_on_all"):
+        print(f"WARNING: {checkpoint} was trained with --train-on-all; its val_names were ALSO trained on, "
+              "so this is a train-set number, not a held-out score.", file=sys.stderr)
     return list(names), ckpt.get("val_prefix")
 
 

@@ -58,6 +58,8 @@ python scripts/score_local.py --geff-dir dist/preds_val_x --split dist/heldout_s
 python scripts/train.py --epochs 400 --lr 1e-4 --batch-size 8 --seed 0 --out dist/models/pack_s0.pt
 sbatch --partition=medium --time=2-00:00:00 scripts/slurm_train.sbatch --epochs 400 --seed 0 --max-hours 47 --out dist/models/pack_s0.pt   # self-chains
 python scripts/train_deepcenter.py --out-dir dist/models/deepcenter --epochs 50
+# Final-submission weights: all 199 volumes (the reference recipe); val_score is then leaky -> pick a fixed late epoch
+sbatch --partition=long --time=3-00:00:00 --gres=gpu:4 --cpus-per-task=32 --mem=160G --job-name=ct-all199-s314159 scripts/slurm_train.sbatch --ddp --train-on-all --epochs 400 --seed 314159 --max-hours 70 --out dist/models/pack_all199_s314159.pt
 
 # Score checkpoints (our checkpoints carry val_names; extra args go to predict.py)
 scripts/score_one.sh <tag> <checkpoint> --secondary-checkpoint <ckpt2> --deepcenter <dc>
@@ -106,7 +108,7 @@ Zarr volumes are read frame by frame as raw blosc2 chunks (`io_zarr.py`). GEFF g
 
 ## Training protocol
 
-Train on 179 volumes, hold out `dist/heldout_split.json` (5 x `44b6`, 15 x `6bba`); the pack's own "all 199 train, validate on 40 of them" recipe is deliberately not used. Checkpoints: `<out>.pt` (last, resumable), `<out>_best.pt` (best `val_score`), `<out>_epochN.pt`. Their history: 1200 s/epoch on an RTX 5090, best epoch 381 of 400; the shipped weights were trained on all 199 volumes, so any held-out number computed with them is a train-set number (0.9175 total / 0.8314 `44b6` / 0.9305 `6bba` on 2026-09-11, vs 0.8056 for `main`'s best).
+Train on 179 volumes, hold out `dist/heldout_split.json` (5 x `44b6`, 15 x `6bba`) for every *measurement*; the pack's own "all 199 train, validate on 40 of them" recipe is used only for final-submission weights via `--train-on-all` (2026-09-17 onwards), whose `val_score` is leaky and whose checkpoints `score_local.py` flags. Checkpoints: `<out>.pt` (last, resumable), `<out>_best.pt` (best `val_score`), `<out>_epochN.pt`. Their history: 1200 s/epoch on an RTX 5090, best epoch 381 of 400; the shipped weights were trained on all 199 volumes, so any held-out number computed with them is a train-set number (0.9175 total / 0.8314 `44b6` / 0.9305 `6bba` on 2026-09-11, vs 0.8056 for `main`'s best).
 
 ## Reading local scores
 
