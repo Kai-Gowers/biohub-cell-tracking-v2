@@ -1,0 +1,389 @@
+<title>Lost Track Viewer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#F2F3F0; --panel:#FFFFFF; --panel2:#E9EBE6; --ink:#1B1F24; --muted:#697079; --line:#D6D9D2;
+  --accent:#0E8FA3; --accent-ink:#FFFFFF;
+  --ok:#3FA75C; --wrong:#E0921A; --dropped:#C24FBB; --weak:#DB4F4F; --none:#7A838D; --fp:#E53935; --pred:#8E98A6; --cand:#C24FBB;
+  --font:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0E1114; --panel:#161A1F; --panel2:#1E242B; --ink:#E6E9ED; --muted:#98A1AC; --line:#2A3139; --accent:#4FD1E0; --accent-ink:#06262B;
+  --ok:#56C271; --wrong:#F2A93B; --dropped:#D86CD1; --weak:#EF6363; --none:#8C96A1; --fp:#FF5C5C; --pred:#A8B2BF; --cand:#D86CD1;
+}}
+:root[data-theme="dark"]{
+  --bg:#0E1114; --panel:#161A1F; --panel2:#1E242B; --ink:#E6E9ED; --muted:#98A1AC; --line:#2A3139; --accent:#4FD1E0; --accent-ink:#06262B;
+  --ok:#56C271; --wrong:#F2A93B; --dropped:#D86CD1; --weak:#EF6363; --none:#8C96A1; --fp:#FF5C5C; --pred:#A8B2BF; --cand:#D86CD1;
+}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);font-size:14px;line-height:1.4;padding-inline:16px;padding-block:12px 20px;box-sizing:border-box}
+*{box-sizing:border-box}
+h1{font-size:18px;font-weight:600;margin:0;letter-spacing:-0.01em}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin-bottom:12px}
+.top .sub{color:var(--muted);font-size:13px}
+select,button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 9px;cursor:pointer}
+button:hover,select:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible,input:focus-visible,.strip:focus-visible,.track:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-family:var(--mono);font-size:12px;padding:3px 8px;border-radius:999px;background:var(--panel2);color:var(--ink)}
+.main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+@media (max-width:900px){.main{grid-template-columns:1fr}}
+.stage{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.canvaswrap{position:relative;width:100%;max-width:100%;aspect-ratio:1/1;background:#000;border-radius:6px;overflow:hidden}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
+.tip{position:absolute;pointer-events:none;background:rgba(10,12,14,.92);color:#fff;font-family:var(--mono);font-size:11.5px;padding:6px 8px;border-radius:5px;white-space:pre;max-width:280px;display:none;z-index:2}
+.transport{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.transport input[type=range]{flex:1;min-width:160px;accent-color:var(--accent)}
+.frame{font-family:var(--mono);font-size:13px;min-width:74px;text-align:right}
+.toggles{display:flex;flex-wrap:wrap;gap:6px 6px;align-items:center}
+.toggles label{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;cursor:pointer;font-size:13px;user-select:none}
+.toggles label input{accent-color:var(--accent);margin:0}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+.side{display:flex;flex-direction:column;gap:12px;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+.card h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;font-size:13px;align-items:center}
+.legend .n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;color:var(--muted)}
+.tracks{display:flex;flex-direction:column;gap:4px;max-height:330px;overflow:auto;padding-right:2px}
+.track{display:grid;grid-template-columns:52px 1fr 40px;gap:8px;align-items:center;padding:4px 6px;border-radius:6px;border:1px solid transparent;cursor:pointer;background:none;color:inherit;text-align:left;font:inherit}
+.track:hover{background:var(--panel2)}
+.track.sel{border-color:var(--accent)}
+.track .id{font-family:var(--mono);font-size:12px}
+.track .n{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:right}
+.mini{display:grid;height:10px;border-radius:2px;overflow:hidden;background:var(--panel2)}
+.mini i,.strip i{display:block;height:100%}
+.strip{display:grid;height:22px;border-radius:4px;overflow:hidden;background:var(--panel2);cursor:pointer;margin-top:6px}
+.strip i{border-right:1px solid rgba(0,0,0,.08)}
+.strip i.cur{outline:2px solid var(--accent);outline-offset:-2px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:13px}
+.kv b{font-weight:500;color:var(--muted)}
+.kv span{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
+kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;background:var(--panel2)}
+.s-link_ok{background:var(--ok)}.s-link_wrong{background:var(--wrong)}.s-dropped{background:var(--dropped)}.s-weak{background:var(--weak)}.s-none{background:var(--none)}.s-blank{background:transparent}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+
+<div class="top">
+  <h1>Lost Track Viewer</h1>
+  <span class="sub">Held-out volumes, our weights, motion relink off. Annotated cells coloured by what the pipeline did with them; step through time to see where a track is lost.</span>
+  <select id="vol" aria-label="Volume"></select>
+  <div class="chips" id="chips"></div>
+</div>
+
+<div class="main">
+  <div class="stage">
+    <div class="canvaswrap"><canvas id="cv" width="1024" height="1024"></canvas><div class="tip" id="tip"></div></div>
+    <div class="transport">
+      <button id="first" title="First frame (Home)">⇤</button>
+      <button id="prev" title="Previous frame (←)">◀</button>
+      <button id="play" title="Play / pause (space)">▶</button>
+      <button id="next" title="Next frame (→)">▶|</button>
+      <button id="last" title="Last frame (End)">⇥</button>
+      <input type="range" id="slider" min="0" max="99" value="0" aria-label="Frame">
+      <span class="frame" id="frame">t = 0</span>
+      <button id="zoom" title="Zoom on the selected track ([ ])">zoom ×2.5</button>
+    </div>
+    <div class="toggles">
+      <label><input type="checkbox" id="tg_gt" checked><span class="sw" style="background:var(--ok)"></span>annotated cells</label>
+      <label><input type="checkbox" id="tg_gtlink" checked>annotated links</label>
+      <label><input type="checkbox" id="tg_pred"><span class="sw" style="background:var(--pred)"></span>all predictions</label>
+      <label><input type="checkbox" id="tg_plink" checked>predicted links at annotated cells</label>
+      <label><input type="checkbox" id="tg_dropped"><span class="sw" style="background:var(--cand);border-radius:0"></span>candidates the ILP dropped</label>
+      <label><input type="checkbox" id="tg_ghost" checked>previous-frame ghosts</label>
+      <label><input type="checkbox" id="tg_trail" checked>trail of the selected track</label>
+      <label>brightness <input type="range" id="bright" min="0.5" max="2.5" step="0.1" value="1" style="width:90px;accent-color:var(--accent)"></label>
+    </div>
+    <p class="note">Background: max-projection over z of the raw frame (256 × 256 px = 104 µm). Marker size grows with depth z so overlapping cells at different depths can be told apart; hover any marker for z and status. <kbd>←</kbd><kbd>→</kbd> step, <kbd>space</kbd> play, <kbd>[</kbd> <kbd>]</kbd> zoom, click a cell to follow its track.</p>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>This frame</h2>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="card" id="selcard" hidden>
+      <h2>Selected track</h2>
+      <div class="kv" id="selkv"></div>
+      <div class="strip" id="strip" tabindex="0" aria-label="Per-frame status of the selected track; click to jump"></div>
+      <p class="note">One cell per frame, left to right. Click a cell to jump there.</p>
+    </div>
+    <div class="card">
+      <h2>Tracks with the most errors</h2>
+      <div class="tracks" id="tracks"></div>
+      <p class="note">Error = a frame where the cell was dropped, undetected, or linked wrongly.</p>
+    </div>
+    <div class="card">
+      <h2>Volume</h2>
+      <div class="kv" id="volkv"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const STATUS = {
+  link_ok:  {label:'detected, linked correctly (or track end)', v:'--ok'},
+  link_wrong:{label:'detected, linked to the wrong cell / not linked', v:'--wrong'},
+  dropped:  {label:'not in output: peak > 0.965 existed, ILP dropped it', v:'--dropped'},
+  weak:     {label:'not in output: only a weak peak (0.1–0.965) nearby', v:'--weak'},
+  none:     {label:'not in output: no peak within 7 µm', v:'--none'},
+};
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+let index = [], data = null, vol = null, t = 0, playing = null, zoomOn = false, selTid = null, hover = null;
+const imgs = new Map();
+const cv = $('cv'), ctx = cv.getContext('2d'), tip = $('tip');
+const N = 256; // image px per side
+
+function ls(k, v){ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){ return null; } }
+
+async function loadIndex(){
+  index = await (await fetch('data/index.json')).json();
+  const sel = $('vol'); sel.innerHTML = '';
+  for(const v of index){
+    const o = document.createElement('option'); o.value = v.name;
+    o.textContent = `${v.name}  ·  score ${v.score?.toFixed(3) ?? '–'}  ·  FN ${v.fn} FP ${v.fp}`;
+    sel.appendChild(o);
+  }
+  const want = ls('lt_vol'); if(want && index.some(v=>v.name===want)) sel.value = want;
+  await loadVolume(sel.value);
+}
+
+async function loadVolume(name){
+  vol = name; ls('lt_vol', name);
+  data = await (await fetch(`data/${name}.json`)).json();
+  imgs.clear(); selTid = null; $('selcard').hidden = true;
+  $('slider').max = data.T - 1;
+  const saved = parseInt(ls(`lt_t_${name}`) ?? '', 10);
+  t = Number.isFinite(saved) ? Math.min(Math.max(saved,0), data.T-1) : 0;
+  // index positions of pred nodes across frames for drawing links to t+1
+  data._pos = new Map();
+  data.frames.forEach((f, ti) => { for(const p of f.pred) data._pos.set(p[0], [ti, p[1], p[2], p[3], p[4]]); });
+  data._gtpos = new Map();
+  data.frames.forEach((f, ti) => { for(const g of f.gt) data._gtpos.set(g[0], [ti, g[1], g[2], g[3], g[4], g[5]]); });
+  data._gtkids = new Map();
+  for(const [u,w] of (data.gt_edges||[])){ if(!data._gtkids.has(u)) data._gtkids.set(u, []); data._gtkids.get(u).push(w); }
+  data._trackNodes = new Map();
+  for(const [gid, r] of data._gtpos){ if(!data._trackNodes.has(r[4])) data._trackNodes.set(r[4], []); data._trackNodes.get(r[4]).push([r[0], r[1], r[2], r[3], gid, r[5]]); }
+  for(const arr of data._trackNodes.values()) arr.sort((a,b)=>a[0]-b[0]);
+  renderChips(); renderVolKv(); renderTracks(); preload(t);
+  show(t);
+}
+
+function sheetOf(ti){ return Math.floor(ti / (data.sheet || 10)); }
+function img(ti){
+  const si = sheetOf(ti);
+  if(imgs.has(si)) return imgs.get(si);
+  const im = new Image(); im.decoding = 'async';
+  im.src = `frames/${vol}/s${String(si).padStart(2,'0')}.jpg`;
+  im.onload = () => { if(sheetOf(t) === si) draw(); };
+  imgs.set(si, im); return im;
+}
+function preload(ti){ for(let k=-1;k<=1;k++){ const j=ti+k*(data.sheet||10); if(j>=0 && j<data.T) img(j); } }
+
+function show(ti){
+  t = Math.min(Math.max(ti,0), data.T-1); ls(`lt_t_${vol}`, t);
+  $('slider').value = t; $('frame').textContent = `t = ${t} / ${data.T-1}`;
+  preload(t); draw(); renderLegend(); renderStrip();
+}
+
+// --- geometry -------------------------------------------------------------------------------------
+function view(){
+  // returns {s, ox, oy}: canvas = s * imagepx + o
+  const base = cv.width / N;
+  if(zoomOn && selTid !== null){
+    const node = curTrackNode();
+    if(node){ const s = base*2.5; return {s, ox: cv.width/2 - node[3]*s, oy: cv.height/2 - node[2]*s}; }
+  }
+  return {s: base, ox: 0, oy: 0};
+}
+function curTrackNode(){
+  const arr = data._trackNodes.get(selTid); if(!arr) return null;
+  let best = null; for(const n of arr){ if(n[0] <= t) best = n; }
+  return best || arr[0];
+}
+const X = (v, x) => v.ox + x*v.s, Y = (v, y) => v.oy + y*v.s;
+const rz = (z) => 4 + 6 * (z / Math.max(1, data.shape[0]-1)); // marker radius in image px, by depth
+
+// --- drawing ---------------------------------------------------------------------------------------
+function draw(){
+  const v = view(), f = data.frames[t], W = cv.width;
+  ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,W);
+  const im = img(t);
+  if(im.complete && im.naturalWidth){
+    ctx.imageSmoothingEnabled = v.s > 6;
+    ctx.filter = `brightness(${$('bright').value})`;
+    const row = t % (data.sheet || 10);
+    ctx.drawImage(im, 0, row*N, N, N, v.ox, v.oy, N*v.s, N*v.s);
+    ctx.filter = 'none';
+  }
+  const lw = Math.max(1, v.s/3);
+  // ghosts of previous frame
+  if($('tg_ghost').checked && t > 0){
+    ctx.globalAlpha = .35;
+    for(const g of data.frames[t-1].gt){ ctx.strokeStyle = css(STATUS[g[5]].v); ctx.lineWidth = lw*0.7; ctx.setLineDash([2,3]); ring(v, g[3], g[2], rz(g[1])*0.8); }
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+  }
+  // all predictions
+  if($('tg_pred').checked){
+    ctx.fillStyle = css('--pred'); ctx.globalAlpha = .8;
+    for(const p of f.pred){ ctx.beginPath(); ctx.arc(X(v,p[3]), Y(v,p[2]), Math.max(1.5, v.s*0.45), 0, 6.283); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+  // dropped candidates
+  if($('tg_dropped').checked){
+    ctx.strokeStyle = css('--cand'); ctx.lineWidth = lw;
+    for(const c of f.dropped){ const r = rz(c[0])*0.9*v.s; ctx.strokeRect(X(v,c[2])-r, Y(v,c[1])-r, 2*r, 2*r); }
+  }
+  // predicted links that touch annotated cells (TP green, FP red)
+  if($('tg_plink').checked){
+    for(const [u,w,cls] of f.pedges){
+      if(cls === 0) continue;
+      const a = data._pos.get(u), b = data._pos.get(w); if(!a || !b) continue;
+      ctx.strokeStyle = cls === 1 ? css('--ok') : css('--fp'); ctx.lineWidth = cls === 1 ? lw : lw*1.6;
+      line(v, a[3], a[2], b[3], b[2]);
+      if(cls === 2){ ctx.fillStyle = css('--fp'); ctx.beginPath(); ctx.arc(X(v,b[3]), Y(v,b[2]), Math.max(2, v.s*0.6), 0, 6.283); ctx.fill(); }
+    }
+  }
+  // annotated links to next frame
+  if($('tg_gtlink').checked && t+1 < data.T){
+    ctx.strokeStyle = css('--ok'); ctx.lineWidth = lw*0.8; ctx.setLineDash([4,3]); ctx.globalAlpha = .7;
+    for(const g of f.gt){
+      for(const kid of (data._gtkids.get(g[0]) || [])){ const h = data._gtpos.get(kid); if(h) line(v, g[3], g[2], h[3], h[2]); }
+    }
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+  }
+  // trail of the selected track
+  if($('tg_trail').checked && selTid !== null){
+    const arr = data._trackNodes.get(selTid) || [];
+    ctx.lineWidth = lw*1.4;
+    for(let i=1;i<arr.length;i++){
+      if(arr[i][0] > t) break;
+      const age = t - arr[i][0]; ctx.globalAlpha = Math.max(.15, 1 - age/25);
+      ctx.strokeStyle = css('--accent'); line(v, arr[i-1][3], arr[i-1][2], arr[i][3], arr[i][2]);
+    }
+    ctx.globalAlpha = 1;
+  }
+  // annotated cells
+  if($('tg_gt').checked){
+    for(const g of f.gt){
+      const col = css(STATUS[g[5]].v), r = rz(g[1]);
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = lw*1.3;
+      if(g[6] >= 0){ ring(v, g[3], g[2], r); }               // detected: ring
+      else { ctx.globalAlpha=.9; ctx.beginPath(); ctx.arc(X(v,g[3]), Y(v,g[2]), r*v.s*0.55, 0, 6.283); ctx.fill(); ctx.globalAlpha=1; ring(v, g[3], g[2], r); }
+      if(g[6] >= 0){ const p = data._pos.get(g[6]); if(p){ ctx.strokeStyle = col; ctx.lineWidth = lw*0.8; line(v, g[3], g[2], p[3], p[2]); } }
+      if(g[4] === selTid){ ctx.strokeStyle = css('--accent'); ctx.lineWidth = lw*1.8; ring(v, g[3], g[2], r*1.6); }
+    }
+  }
+}
+function ring(v, x, y, r){ ctx.beginPath(); ctx.arc(X(v,x), Y(v,y), r*v.s, 0, 6.283); ctx.stroke(); }
+function line(v, x0,y0,x1,y1){ ctx.beginPath(); ctx.moveTo(X(v,x0), Y(v,y0)); ctx.lineTo(X(v,x1), Y(v,y1)); ctx.stroke(); }
+
+// --- side panels -----------------------------------------------------------------------------------
+function renderLegend(){
+  const f = data.frames[t], counts = {};
+  for(const g of f.gt) counts[g[5]] = (counts[g[5]]||0)+1;
+  const fp = f.pedges.filter(e=>e[2]===2).length, tp = f.pedges.filter(e=>e[2]===1).length;
+  let h = '';
+  for(const [k,s] of Object.entries(STATUS)) h += `<span class="sw" style="background:var(${s.v})"></span><span>${s.label}</span><span class="n">${counts[k]||0}</span>`;
+  h += `<span class="sw" style="background:var(--fp)"></span><span>false predicted links leaving this frame</span><span class="n">${fp}</span>`;
+  h += `<span class="sw" style="background:var(--ok)"></span><span>correct predicted links leaving this frame</span><span class="n">${tp}</span>`;
+  h += `<span class="sw" style="background:var(--cand);border-radius:0"></span><span>above-threshold candidates the ILP dropped</span><span class="n">${f.dropped.length}</span>`;
+  h += `<span class="sw" style="background:var(--pred)"></span><span>predicted cells in this frame</span><span class="n">${f.pred.length}</span>`;
+  $('legend').innerHTML = h;
+}
+function renderChips(){
+  const s = data.summary, sc = index.find(v=>v.name===vol);
+  $('chips').innerHTML = [
+    `adj. edge Jaccard ${sc?.score?.toFixed(3) ?? '–'}`, `TP ${s.tp}`, `FP ${s.fp}`, `FN ${s.fn}`,
+    `annotated cells ${s.gt_nodes}`, `predicted cells ${s.pred_nodes}`, `ILP-dropped candidates ${s.dropped_candidates}`
+  ].map(x=>`<span class="chip">${x}</span>`).join('');
+}
+function renderVolKv(){
+  const s = data.summary, c = s.status_counts;
+  $('volkv').innerHTML = Object.entries({
+    'annotated cells': s.gt_nodes, 'linked correctly': c.link_ok||0, 'linked wrongly': c.link_wrong||0,
+    'dropped by the ILP': c.dropped||0, 'weak peak only': c.weak||0, 'no peak': c.none||0,
+    'frames': data.T, 'z planes': data.shape[0],
+  }).map(([k,v])=>`<b>${k}</b><span>${v}</span>`).join('');
+}
+function renderTracks(){
+  const box = $('tracks'); box.innerHTML = '';
+  const list = data.tracks.filter(tr=>tr.n>=2).slice(0, 60);
+  for(const tr of list){
+    const b = document.createElement('button'); b.className = 'track' + (tr.tid===selTid?' sel':''); b.type='button';
+    b.innerHTML = `<span class="id">#${tr.tid}</span><span class="mini" style="grid-template-columns:repeat(${data.T},1fr)">${tr.status.map(s=>`<i class="s-${s||'blank'}"></i>`).join('')}</span><span class="n">${tr.errors}/${tr.n}</span>`;
+    b.title = `track ${tr.tid}: frames ${tr.start}–${tr.end}, ${tr.errors} error frame(s) of ${tr.n}`;
+    b.onclick = () => selectTrack(tr.tid, tr.first_error ?? tr.start);
+    box.appendChild(b);
+  }
+}
+function selectTrack(tid, jumpTo){
+  selTid = tid; $('selcard').hidden = false;
+  const tr = data.tracks.find(x=>x.tid===tid);
+  $('selkv').innerHTML = Object.entries({
+    'track': `#${tid}`, 'frames': `${tr.start}–${tr.end} (${tr.n} cells)`, 'error frames': tr.errors,
+    'first error at': tr.first_error ?? '–', 'parent track': tr.parent_tid ?? 'none (root)',
+  }).map(([k,v])=>`<b>${k}</b><span>${v}</span>`).join('');
+  for(const el of $('tracks').children) el.classList.toggle('sel', el.textContent.startsWith(`#${tid}`));
+  if(jumpTo !== undefined) show(jumpTo); else { draw(); renderStrip(); }
+}
+function renderStrip(){
+  if(selTid === null) return;
+  const tr = data.tracks.find(x=>x.tid===selTid); const st = $('strip');
+  st.style.gridTemplateColumns = `repeat(${data.T},1fr)`;
+  st.innerHTML = tr.status.map((s,i)=>`<i class="s-${s||'blank'}${i===t?' cur':''}" data-t="${i}" title="t=${i}: ${s ? STATUS[s].label : 'not annotated'}"></i>`).join('');
+}
+$('strip').addEventListener('click', e => { const i = e.target.dataset.t; if(i!==undefined) show(+i); });
+
+// --- interaction -----------------------------------------------------------------------------------
+function hitTest(px, py){
+  const v = view(), f = data.frames[t]; let best=null, bd=1e9;
+  const test = (x,y,r,obj) => { const d = Math.hypot(X(v,x)-px, Y(v,y)-py); if(d < Math.max(r*v.s, 8) && d < bd){ bd=d; best=obj; } };
+  for(const g of f.gt) test(g[3], g[2], rz(g[1])*1.2, {kind:'gt', g});
+  if($('tg_dropped').checked) for(const c of f.dropped) test(c[2], c[1], rz(c[0]), {kind:'cand', c});
+  if($('tg_pred').checked && !best) for(const p of f.pred) test(p[3], p[2], 3, {kind:'pred', p});
+  return best;
+}
+function canvasPoint(e){ const r = cv.getBoundingClientRect(); return [ (e.clientX-r.left)*cv.width/r.width, (e.clientY-r.top)*cv.height/r.height, e.clientX-r.left, e.clientY-r.top ]; }
+cv.addEventListener('mousemove', e => {
+  const [px,py,cx,cy] = canvasPoint(e); const h = hitTest(px,py);
+  if(!h){ tip.style.display='none'; return; }
+  let txt;
+  if(h.kind==='gt'){ const g=h.g; txt = `annotated cell ${g[0]}  track #${g[4]}\nz=${g[1]} y=${g[2]} x=${g[3]}  (z ${(g[1]*1.625).toFixed(0)} µm)\n${STATUS[g[5]].label}` + (g[6]>=0 ? `\nmatched prediction ${g[6]}` : (g[7]!=null ? `\nbest nearby peak p=${g[7]}` : '')); }
+  else if(h.kind==='cand'){ const c=h.c; txt = `candidate dropped by the ILP\nz=${c[0]} y=${c[1]} x=${c[2]}  p=${c[3]}`; }
+  else { const p=h.p; txt = `prediction ${p[0]}\nz=${p[1]} y=${p[2]} x=${p[3]}` + (p[4]>=0 ? `\nmatched annotated cell ${p[4]}` : '\nnot near an annotated cell'); }
+  tip.textContent = txt; tip.style.display='block';
+  const wrap = cv.parentElement.getBoundingClientRect();
+  tip.style.left = Math.min(cx+12, wrap.width-290) + 'px'; tip.style.top = Math.max(0, cy-10) + 'px';
+});
+cv.addEventListener('mouseleave', () => tip.style.display='none');
+cv.addEventListener('click', e => { const [px,py] = canvasPoint(e); const h = hitTest(px,py); if(h && h.kind==='gt') selectTrack(h.g[4]); });
+
+$('slider').addEventListener('input', e => show(+e.target.value));
+$('prev').onclick = () => show(t-1); $('next').onclick = () => show(t+1);
+$('first').onclick = () => show(0); $('last').onclick = () => show(data.T-1);
+function togglePlay(){
+  if(playing){ clearInterval(playing); playing=null; $('play').textContent='▶'; $('play').classList.remove('on'); return; }
+  $('play').textContent='❚❚'; $('play').classList.add('on');
+  playing = setInterval(() => { if(t >= data.T-1) togglePlay(); else show(t+1); }, 350);
+}
+$('play').onclick = togglePlay;
+$('zoom').onclick = () => { zoomOn = !zoomOn; $('zoom').classList.toggle('on', zoomOn); draw(); };
+$('bright').addEventListener('input', draw);
+for(const id of ['tg_gt','tg_gtlink','tg_pred','tg_plink','tg_dropped','tg_ghost','tg_trail']) $(id).addEventListener('change', draw);
+$('vol').addEventListener('change', e => loadVolume(e.target.value));
+document.addEventListener('keydown', e => {
+  if(e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if(e.key==='ArrowRight'){ show(t+1); e.preventDefault(); }
+  else if(e.key==='ArrowLeft'){ show(t-1); e.preventDefault(); }
+  else if(e.key===' '){ togglePlay(); e.preventDefault(); }
+  else if(e.key==='Home'){ show(0); } else if(e.key==='End'){ show(data.T-1); }
+  else if(e.key==='[' || e.key===']'){ $('zoom').click(); }
+});
+loadIndex();
+})();
+</script>
