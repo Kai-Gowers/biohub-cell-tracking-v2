@@ -102,6 +102,7 @@ def run_volume(
     use_ilp: bool = True,
     max_frames: int | None = None,
     verbose: bool = False,
+    dump_det_dir: Path | None = None,
 ) -> VolumeResult:
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}, got {stage!r}")
@@ -112,7 +113,7 @@ def run_volume(
     out = predict_video(
         models.primary, volume, models.device, predict_cfg,
         secondary=models.secondary, window_size=models.window_size,
-        max_frames=max_frames, verbose=verbose,
+        max_frames=max_frames, verbose=verbose, dump_det_dir=dump_det_dir,
     )
     stats["predict"] = {k: v for k, v in out.stats.items() if k not in ("retention_guard", "edge_feature_tta_delta")}
     stats["predict"]["edge_feature_tta_delta_mean"] = (

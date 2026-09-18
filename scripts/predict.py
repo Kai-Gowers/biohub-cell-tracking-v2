@@ -67,9 +67,13 @@ def main() -> int:
                         help="PostprocessConfig boolean to switch off, e.g. output_gap2_recovery (repeatable).")
     parser.add_argument("--post-set", action="append", default=[], metavar="FIELD=VALUE",
                         help="Override any PostprocessConfig field, e.g. gap_close_um=5.0 or deepcenter_tta=1 (repeatable).")
+    parser.add_argument("--ilp-set", action="append", default=[], metavar="FIELD=VALUE",
+                        help="Override any ILPConfig field, e.g. disappearance_weight=1.0 (repeatable).")
     parser.add_argument("--predict-set", action="append", default=[], metavar="FIELD=VALUE",
                         help="Override any PredictConfig field, e.g. secondary_edge_weight=0.15 (repeatable).")
     parser.add_argument("--dump-stats", type=Path, default=None, help="Write per-volume stats JSON here.")
+    parser.add_argument("--dump-det-dir", type=Path, default=None,
+                        help="Diagnostics: write each frame's final detection probability map (float16 npy) under this dir.")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -122,6 +126,7 @@ def main() -> int:
 
     pcfg_kwargs.update(_typed_overrides(PredictConfig, args.predict_set))
     predict_cfg = PredictConfig(**pcfg_kwargs)
+    ilp_cfg = ILPConfig(**_typed_overrides(ILPConfig, args.ilp_set))
     PRESETS = {"notebook": {}, "tuned": {"output_motion_relink": False}}
     post_kwargs = dict(PRESETS[args.preset])
     valid = {f.name for f in dataclasses.fields(PostprocessConfig)}
@@ -134,7 +139,8 @@ def main() -> int:
     print(f"post-processing preset '{args.preset}': {PRESETS[args.preset]}"
           + (f"; overrides: predict={_typed_overrides(PredictConfig, args.predict_set)} post={_typed_overrides(PostprocessConfig, args.post_set)}"
              if (args.post_set or args.predict_set) else "")
-          + (f"; post-off={args.post_off}" if args.post_off else ""), flush=True)
+          + (f"; post-off={args.post_off}" if args.post_off else "")
+          + (f"; ilp={_typed_overrides(ILPConfig, args.ilp_set)}" if args.ilp_set else ""), flush=True)
 
     models = load_models(
         args.checkpoint, args.secondary_checkpoint, args.deepcenter,
@@ -151,8 +157,9 @@ def main() -> int:
     for i, name in enumerate(names, 1):
         result = run_volume(
             models, Path(test_dir) / f"{name}.zarr",
-            predict_cfg=predict_cfg, ilp_cfg=ILPConfig(), post_cfg=post_cfg,
+            predict_cfg=predict_cfg, ilp_cfg=ilp_cfg, post_cfg=post_cfg,
             stage=stage, use_ilp=not args.no_ilp, max_frames=args.t_max, verbose=args.verbose,
+            dump_det_dir=args.dump_det_dir,
         )
         write_result(result, args.out_dir, name)
         s = result.stats

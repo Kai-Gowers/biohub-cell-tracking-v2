@@ -331,8 +331,14 @@ def predict_video(
     window_size: int = 2,
     max_frames: int | None = None,
     verbose: bool = False,
+    dump_det_dir: Path | None = None,
 ) -> PredictOutput:
-    """Sliding-window inference on one video (stride W-1 covers every consecutive pair once)."""
+    """Sliding-window inference on one video (stride W-1 covers every consecutive pair once).
+
+    ``dump_det_dir``: diagnostics only -- write the final per-frame detection probability map (after TTA,
+    dual-seed blend and retention guard, i.e. exactly what the peak picker sees) as float16
+    ``<dir>/<volume>/t<t:03d>.npy`` on the 1.625 um grid.
+    """
     started = time.time()
     T = volume.n_t if max_frames is None else min(volume.n_t, max_frames)
     image_shape = (T,) + tuple(volume.grid_shape)
@@ -416,6 +422,10 @@ def predict_video(
         # --- detect cells in each frame (dedup across windows) ---
         for f_idx, t in enumerate(frame_indices):
             if t not in seen_frames:
+                if dump_det_dir is not None:
+                    d = Path(dump_det_dir) / volume.name
+                    d.mkdir(parents=True, exist_ok=True)
+                    np.save(d / f"t{t:03d}.npy", torch.sigmoid(det_logits[f_idx][0]).detach().cpu().numpy().astype(np.float16))
                 arr = detect_cells_pooled(det_logits[f_idx][0], t, cfg.det_threshold, pool_k)
                 coord_offset[t] = (global_node_count, global_node_count + len(arr))
                 global_node_count += len(arr)

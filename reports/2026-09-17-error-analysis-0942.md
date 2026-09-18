@@ -209,3 +209,32 @@ peaks; 0 of 393k nodes have a closer neighbour) and appear only as gap-closing s
 
 **Numbers to carry forward.** Detector recall 97.1 % / localisation median 1.7 um; association recall
 97.6 %; four fifths of counted errors detection-borne; motion relink -0.011.
+
+## 7. Addendum (2026-09-18): is the evidence for a missed cell in the detection map?
+
+Prompted by Ultrack's hypothesis-selection idea. `predict.py --dump-det-dir` writes the final per-frame
+detection probability map (after TTA, dual-seed blend and retention guard) and `scripts/error_detection_ceiling.py`
+looks within the 7 um matching radius of every annotated cell (`dist/error_analysis_0942/ceiling/`):
+
+| of the 417 missed cells (ILP stage) | n | % |
+|---|---|---|
+| a local maximum **above the 0.965 threshold** within 7 um -- the detector emitted a candidate there | 221 | 53 |
+| best local maximum within 7 um between 0.5 and 0.965 -- a lower-threshold hypothesis would exist | ~85 | 20 |
+| best local maximum between 0.1 and 0.5 | ~20 | 5 |
+| no local maximum within 7 um at all | 54 | 13 |
+| (detected cells: 100 % have a local max > 0.965 within 7 um) | | |
+
+So the largest single bucket of "missed" cells is not missed by the detector at all: the peak passed the
+threshold and became a candidate, and the **ILP dropped it**. Across the 20 volumes the ILP keeps 393,178 of
+446,067 detections, dropping 11.9 % (4 % to 26 % per volume; 25.9 % on `44b6_e57ff5c6`, the worst-scoring
+volume). With appearance cost 0 and disappearance cost 2, a detection whose link candidates are weak or
+absent (edge_prob below the 0.48 candidate threshold, or its neighbours in t+-1 themselves missing) costs 2
+to keep and is discarded. In crowded regions, where the transformer's edge probabilities are lowest, that is
+exactly where true cells get dropped.
+
+Reading against sections 2-3: the "displaced / merged peak" story (case A) is real but smaller than the raw
+numbers suggested -- the unmatched prediction 7-10 um away is usually a *neighbouring* surviving node, while
+the cell's own peak existed and was removed downstream. Candidate inflation from a lower detection threshold
+is modest (+11 local maxima per frame at 0.5, on ~200 candidates), so a hypothesis-style test is cheap, but
+the first lever is the ILP's disappearance cost and the edge candidate threshold, which decide whether an
+above-threshold peak with weak links survives. Arms for both are queued (results in the next report).
